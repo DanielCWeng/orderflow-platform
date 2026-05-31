@@ -21,7 +21,22 @@ function startVerticalDrag(e, onMove) {
 }
 
 function App() {
-  const [density, setDensity] = useState('balanced');
+  // Re-render whenever live data commits a new snapshot
+  const [, setDataVersion] = useState(0);
+  useEffect(() => {
+    const onData = () => setDataVersion(v => v + 1);
+    document.addEventListener('of-data-update', onData);
+    return () => document.removeEventListener('of-data-update', onData);
+  }, []);
+
+  // Live connection status (from data-live.js)
+  const [liveStatus, setLiveStatus] = useState(null);
+  useEffect(() => {
+    const onStatus = () => setLiveStatus(window._OF_LIVE_STATUS ? { ...window._OF_LIVE_STATUS } : null);
+    document.addEventListener('of-status-update', onStatus);
+    return () => document.removeEventListener('of-status-update', onStatus);
+  }, []);
+
   const [active, setActive] = useState('ES');
   const [tf, setTf] = useState('5m');
   const [chartMode, setChartMode] = useState('bidask');
@@ -38,10 +53,6 @@ function App() {
   const [deltaH, setDeltaH] = useState(190);
   const [scannerH, setScannerH] = useState(170);
   const [tpoH, setTpoH] = useState(220);
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-density', density);
-  }, [density]);
 
   // drag handlers
   const dragA1 = (e) => { // chart | delta
@@ -63,12 +74,24 @@ function App() {
   };
 
   const ss = window.OF_DATA.sessionStats;
-  const last = window.OF_DATA.last;
-  const open = ss.open;
+  const last = window.OF_DATA.last || 0;
+  const open = ss.open || last || 1;
   const chgAbs = last - open;
-  const chgPct = (chgAbs / open) * 100;
+  const chgPct = open > 0 ? (chgAbs / open) * 100 : 0;
   const up = chgAbs >= 0;
-  const time = '14:32:18 ET';
+  const [time, setTime] = useState('');
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date();
+      const localStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      const localTz = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(now).find(p => p.type === 'timeZoneName').value;
+      const nycStr = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      setTime(`${localStr} ${localTz} · ${nycStr} ET`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <div className="app" data-screen-label="01 Orderflow">
@@ -87,15 +110,22 @@ function App() {
           <a href="#">Journal</a>
         </nav>
         <div className="topbar-right">
-          <div className="density-toggle" role="tablist" aria-label="density">
-            {['compact', 'balanced', 'spacious'].map((d) => (
-              <button key={d} className={d === density ? 'active' : ''} onClick={() => setDensity(d)}>
-                {d[0].toUpperCase() + d.slice(1)}
-              </button>
-            ))}
-          </div>
           <span className="pill"><span className="live" /> CME · LIVE</span>
           <span className="mono">{time}</span>
+          <button
+            className="ib-connect-btn"
+            title="IronBeam connection"
+            onClick={() => {
+              const ov = document.getElementById('auth-overlay');
+              if (ov) ov.style.display = ov.style.display === 'block' ? 'none' : 'block';
+            }}
+          >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M2 8a6 6 0 1 0 12 0A6 6 0 0 0 2 8Z" />
+              <path d="M8 5v3l2 2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {liveStatus?.ok ? 'IB' : 'Connect'}
+          </button>
         </div>
       </div>
 
@@ -176,12 +206,13 @@ function App() {
 
       {/* STATUS BAR */}
       <div className="statusbar">
-        <span className="ok">● Connected</span>
-        <span>Latency 8ms</span>
-        <span>Feed: CME Globex</span>
+        {liveStatus
+          ? <span className={liveStatus.ok ? 'ok' : ''}>{liveStatus.ok ? '●' : '○'} {liveStatus.text}</span>
+          : <span>○ Waiting for connection…</span>
+        }
+        <span>Feed: IronBeam · CME Globex</span>
         <span>Symbol: {active}H6</span>
         <span>TF: {tf}</span>
-        <span>Density: {density}</span>
         <span style={{ marginLeft: 'auto' }}>Account: PAPER-04231 · Equity $50,000.00 · P&L +$1,284.50</span>
       </div>
     </div>

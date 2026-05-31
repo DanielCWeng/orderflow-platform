@@ -324,9 +324,71 @@
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 3px; }
   ::-webkit-scrollbar-track { background: transparent; }
+
+  /* ── IronBeam connect button ── */
+  .ib-connect-btn {
+    all: unset; cursor: pointer; display: flex; align-items: center; gap: 5px;
+    padding: 4px 8px; border-radius: 4px; font-size: 11px; color: var(--fg-2);
+    background: var(--bg-2); border: 1px solid var(--line); transition: color 0.12s, border-color 0.12s;
+  }
+  .ib-connect-btn:hover { color: var(--fg-0); border-color: var(--fg-3); }
+  .ib-connect-btn svg { width: 12px; height: 12px; }
+
+  /* ── IronBeam connect panel ── */
+  #auth-overlay {
+    display: none; position: fixed; bottom: 36px; right: 16px; z-index: 9999;
+  }
+  .auth-box {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: 8px; padding: 20px 22px; width: 260px;
+    display: flex; flex-direction: column; gap: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .auth-box .brand {
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.06em; color: var(--fg-0);
+  }
+  .auth-box .brand small {
+    display: block; margin-top: 3px; color: var(--fg-3);
+    font-size: 9.5px; font-weight: 400; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  #auth-form { display: flex; flex-direction: column; gap: 8px; }
+  #auth-form input {
+    all: unset; background: var(--bg-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 7px 9px; font-size: 11.5px;
+    color: var(--fg-0); font-family: inherit; width: 100%; box-sizing: border-box;
+  }
+  #auth-form input:focus { border-color: var(--buy); outline: none; }
+  #auth-form input::placeholder { color: var(--fg-3); }
+  #auth-form button {
+    all: unset; cursor: pointer; background: var(--bg-3); border: 1px solid var(--line);
+    border-radius: 4px; padding: 8px; text-align: center; font-size: 11.5px;
+    font-weight: 600; color: var(--fg-0); letter-spacing: 0.04em; margin-top: 2px;
+    transition: background 0.12s;
+  }
+  #auth-form button:hover { background: color-mix(in oklab, var(--buy) 20%, var(--bg-3)); }
+  #auth-error {
+    font-size: 10px; color: var(--sell); min-height: 12px;
+    font-family: 'JetBrains Mono', monospace;
+  }
 </style>
 </head>
 <body>
+
+<div id="auth-overlay">
+  <div class="auth-box">
+    <div class="brand">
+      ORDERFLOW
+      <small>IronBeam · Demo</small>
+    </div>
+    <form id="auth-form" onsubmit="event.preventDefault(); window.connectIronBeam(document.getElementById('ib-user').value, document.getElementById('ib-pass').value)">
+      <input type="text"     id="ib-user" placeholder="Username" autocomplete="username" />
+      <input type="password" id="ib-pass" placeholder="Password" autocomplete="current-password" />
+      <button type="submit">Connect</button>
+      <div id="auth-error"></div>
+    </form>
+  </div>
+</div>
+
 <div id="root"></div>
 
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
@@ -334,9 +396,9 @@
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 
-<script src="data.js"></script>
+<script src="data-live.js"></script>
 <script type="text/babel" src="panels.js"></script>
-<script type="text/babel" src="chart-lwc.js"></script>
+<script type="text/babel" src="chartlwc.js"></script>
 <script type="text/babel" src="app.js"></script>
 </body>
 </html>

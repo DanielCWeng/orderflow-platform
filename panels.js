@@ -119,7 +119,7 @@ function Sidebar({ open, onToggle, active, onSelect }) {
 // ============== DOM Ladder ==============
 function DOMLadder() {
   const { dom } = window.OF_DATA;
-  const maxSize = Math.max(...dom.map((r) => Math.max(r.bid, r.ask)));
+  const maxSize = Math.max(1, ...dom.map((r) => Math.max(r.bid, r.ask)));
   return (
     <div className="panel p-dom">
       <div className="panel-h">
@@ -257,6 +257,11 @@ function TapePanel() {
 // ============== TPO / Market Profile ==============
 function TPO() {
   const { tpo } = window.OF_DATA;
+  if (!tpo.rows.length) return (
+    <div className="panel p-tpo">
+      <div className="panel-h"><span className="title">TPO Profile</span></div>
+    </div>
+  );
   const ROWS = 22;
   const step = Math.max(1, Math.ceil(tpo.rows.length / ROWS));
   const display = [];
@@ -273,15 +278,15 @@ function TPO() {
       <div className="panel-h">
         <span className="title">TPO Profile</span>
         <span className="sep" />
-        <span className="meta">30M · A–{tpo.periods[tpo.periods.length - 1].letter}</span>
+        <span className="meta">30M · A–{tpo.periods.length ? tpo.periods[tpo.periods.length - 1].letter : '—'}</span>
         <span className="spacer" />
-        <span className="meta">IB {fmtPx(tpo.ibLo)}–{fmtPx(tpo.ibHi)}</span>
+        <span className="meta">IB {tpo.periods.length >= 2 ? `${fmtPx(tpo.ibLo)}–${fmtPx(tpo.ibHi)}` : '—'}</span>
       </div>
       <div className="tpo-wrap">
         <div className="tpo-axis">
           {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
-            const idx = Math.round(p * (display.length - 1));
-            return <div key={i}>{fmtPx(display[idx].px)}</div>;
+            const idx = Math.round(p * Math.max(0, display.length - 1));
+            return <div key={i}>{display[idx] ? fmtPx(display[idx].px) : '—'}</div>;
           })}
         </div>
         <div className="tpo-grid">
@@ -308,8 +313,13 @@ function TPO() {
 // ============== Cumulative Delta ==============
 function DeltaPanel() {
   const { delta, sessionStats } = window.OF_DATA;
+  if (!delta.length) return (
+    <div className="panel p-delta">
+      <div className="panel-h"><span className="title">Cumulative Delta</span></div>
+    </div>
+  );
   const W = 1000, H = 100;
-  const xStep = W / (delta.length - 1);
+  const xStep = delta.length > 1 ? W / (delta.length - 1) : W;
   const cumMax = Math.max(...delta.map((d) => d.cum));
   const cumMin = Math.min(...delta.map((d) => d.cum));
   const range = Math.max(Math.abs(cumMax), Math.abs(cumMin)) * 1.15 || 1;
@@ -329,7 +339,7 @@ function DeltaPanel() {
         <span className="spacer" />
         <div className="delta-stats">
           <div className="s"><span className="k">Δ Session</span><span className={'v ' + (sessionStats.delta >= 0 ? 'pos' : 'neg')}>{fmtSigned(sessionStats.delta)}</span></div>
-          <div className="s"><span className="k">Δ Last Bar</span><span className={'v ' + (delta[delta.length - 1].delta >= 0 ? 'pos' : 'neg')}>{fmtSigned(delta[delta.length - 1].delta)}</span></div>
+          <div className="s"><span className="k">Δ Last Bar</span><span className={'v ' + ((delta[delta.length - 1]?.delta ?? 0) >= 0 ? 'pos' : 'neg')}>{fmtSigned(delta[delta.length - 1]?.delta ?? 0)}</span></div>
           <div className="s"><span className="k">VWAP</span><span className="v mono">{fmtPx(sessionStats.vwap)}</span></div>
         </div>
       </div>
