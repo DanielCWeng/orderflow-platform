@@ -23,9 +23,9 @@ function createFootprintSeriesView() {
       target.useMediaCoordinateSpace((scope) => {
         const ctx = scope.context;
         const bars = data.bars;
-        if (!bars || bars.length < 2) return;
+        if (!bars || bars.length === 0) return;
 
-        let barSpacing = 14;
+        let barSpacing = 38; // default for footprint mode
         for (let i = 1; i < Math.min(bars.length, 10); i++) {
           const dx = bars[i].x - bars[i - 1].x;
           if (dx > 0) { barSpacing = dx; break; }
@@ -158,6 +158,7 @@ function ChartLW(props) {
   const [, forceRender] = React.useReducer((x) => (x + 1) % 1e9, 0);
   const [size, setSize] = React.useState({ w: 0, h: 0 });
   const [psWidth, setPsWidth] = React.useState(60);
+  const didInitialFitRef = React.useRef(false);
 
   const [tool, setTool] = React.useState('cursor');
   const [drawings, setDrawings] = React.useState([]);
@@ -263,27 +264,19 @@ function ChartLW(props) {
     }
 
     chart.timeScale().applyOptions({ barSpacing: props.mode === 'candle' ? 14 : 38 });
-
-    const forceDraw = () => { try { chart.takeScreenshot(); } catch (e) {} };
-    forceDraw();
-    requestAnimationFrame(forceDraw);
-    setTimeout(forceDraw, 150);
-
     chart.timeScale().fitContent();
 
-    const onChange = () => {
+    const onRangeChange = () => {
       try { setPsWidth(chart.priceScale('right').width()); } catch (e) {}
       forceRender();
     };
-    chart.timeScale().subscribeVisibleLogicalRangeChange(onChange);
-    chart.subscribeCrosshairMove(onChange);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
 
     const ro = new ResizeObserver((entries) => {
       const { width, height } = entries[0].contentRect;
       try { chart.resize(width, height); } catch (e) {}
       setSize({ w: width, h: height });
       try { setPsWidth(chart.priceScale('right').width()); } catch (e) {}
-      forceDraw();
       forceRender();
     });
     ro.observe(el);
@@ -314,9 +307,31 @@ function ChartLW(props) {
     }
     if (chartRef.current) {
       chartRef.current.timeScale().applyOptions({ barSpacing: mode === 'candle' ? 14 : 38 });
-      try { chartRef.current.takeScreenshot(); } catch (e) {}
     }
   }, [mode, showDelta, showImb]);
+
+  // ---- sync series data whenever candles update ----
+  React.useEffect(() => {
+    if (!seriesRef.current || !candles.length) return;
+    seriesRef.current.setData(candles.map((c) => ({
+      time: c.time, open: c.o, high: c.h, low: c.l, close: c.c,
+    })));
+    if (volSeriesRef.current) {
+      volSeriesRef.current.setData(candles.map((c) => ({
+        time: c.time, value: c.vol, color: c.delta >= 0 ? C.buyT : C.sellT,
+      })));
+    }
+    if (fpSeriesRef.current) {
+      fpSeriesRef.current.setData(candles.map((c) => ({
+        time: c.time, low: c.l, high: c.h, footprint: c.footprint,
+      })));
+    }
+    // Scroll to show live data the first time candles arrive
+    if (!didInitialFitRef.current && chartRef.current) {
+      chartRef.current.timeScale().fitContent();
+      didInitialFitRef.current = true;
+    }
+  }, [candles]);
 
   // ---- coordinate helpers ----
   const t2x = (t) => chartRef.current ? chartRef.current.timeScale().timeToCoordinate(t) : null;
@@ -577,14 +592,16 @@ function ChartLW(props) {
         )}
 
         <div className="chart-overlay">
-          <div className="legend mono">
-            <span className="o">O <b>{lastBar.o.toFixed(2)}</b></span>
-            <span className="h">H <b>{lastBar.h.toFixed(2)}</b></span>
-            <span className="l">L <b>{lastBar.l.toFixed(2)}</b></span>
-            <span className="c">C <b>{lastBar.c.toFixed(2)}</b></span>
-            <span className="vol">VOL <b style={{color:C.fg1}}>{(lastBar.vol/1000).toFixed(1)}K</b></span>
-            <span className="vol">Δ <b style={{color:lastBar.delta>=0?C.buy:C.sell}}>{lastBar.delta>=0?'+':''}{lastBar.delta}</b></span>
-          </div>
+          {lastBar && (
+            <div className="legend mono">
+              <span className="o">O <b>{lastBar.o.toFixed(2)}</b></span>
+              <span className="h">H <b>{lastBar.h.toFixed(2)}</b></span>
+              <span className="l">L <b>{lastBar.l.toFixed(2)}</b></span>
+              <span className="c">C <b>{lastBar.c.toFixed(2)}</b></span>
+              <span className="vol">VOL <b style={{color:C.fg1}}>{(lastBar.vol/1000).toFixed(1)}K</b></span>
+              <span className="vol">Δ <b style={{color:lastBar.delta>=0?C.buy:C.sell}}>{lastBar.delta>=0?'+':''}{lastBar.delta}</b></span>
+            </div>
+          )}
         </div>
 
         {isFP && showMarkers && fps && (
