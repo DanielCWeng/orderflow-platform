@@ -128,6 +128,7 @@ function ChartLW(props) {
     showVP, setShowVP,
     showVol, setShowVol,
     showMarkers, setShowMarkers,
+    showIndOverlays, setShowIndOverlays,
   } = props;
 
   const { candles, sessionStats, vp } = window.OF_DATA;
@@ -154,6 +155,9 @@ function ChartLW(props) {
   const seriesRef = React.useRef(null);
   const volSeriesRef = React.useRef(null);
   const fpSeriesRef = React.useRef(null);
+  const vwapLineRef = React.useRef(null);
+  const pocLineRef = React.useRef(null);
+  const prevCandleCountRef = React.useRef(0);
 
   const [, forceRender] = React.useReducer((x) => (x + 1) % 1e9, 0);
   const [size, setSize] = React.useState({ w: 0, h: 0 });
@@ -216,11 +220,11 @@ function ChartLW(props) {
     series.setData(candles.map((c) => ({
       time: c.time, open: c.o, high: c.h, low: c.l, close: c.c,
     })));
-    series.createPriceLine({
+    vwapLineRef.current = series.createPriceLine({
       price: sessionStats.vwap, color: C.text, lineWidth: 1,
       lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: 'VWAP',
     });
-    series.createPriceLine({
+    pocLineRef.current = series.createPriceLine({
       price: vp.poc, color: C.buy, lineWidth: 1,
       lineStyle: LWC.LineStyle.Dotted, axisLabelVisible: true, title: 'POC',
     });
@@ -313,19 +317,52 @@ function ChartLW(props) {
   // ---- sync series data whenever candles update ----
   React.useEffect(() => {
     if (!seriesRef.current || !candles.length) return;
-    seriesRef.current.setData(candles.map((c) => ({
-      time: c.time, open: c.o, high: c.h, low: c.l, close: c.c,
-    })));
-    if (volSeriesRef.current) {
-      volSeriesRef.current.setData(candles.map((c) => ({
-        time: c.time, value: c.vol, color: c.delta >= 0 ? C.buyT : C.sellT,
+
+    const prevCount = prevCandleCountRef.current;
+    const newCount = candles.length;
+
+    if (newCount !== prevCount) {
+      // New bar added or bars reset — full setData
+      seriesRef.current.setData(candles.map((c) => ({
+        time: c.time, open: c.o, high: c.h, low: c.l, close: c.c,
       })));
+      if (volSeriesRef.current) {
+        volSeriesRef.current.setData(candles.map((c) => ({
+          time: c.time, value: c.vol, color: c.delta >= 0 ? C.buyT : C.sellT,
+        })));
+      }
+      if (fpSeriesRef.current) {
+        fpSeriesRef.current.setData(candles.map((c) => ({
+          time: c.time, low: c.l, high: c.h, footprint: c.footprint,
+        })));
+      }
+      prevCandleCountRef.current = newCount;
+    } else {
+      // Same bar count — just update the last bar
+      const last = candles[candles.length - 1];
+      seriesRef.current.update({
+        time: last.time, open: last.o, high: last.h, low: last.l, close: last.c,
+      });
+      if (volSeriesRef.current) {
+        volSeriesRef.current.update({
+          time: last.time, value: last.vol, color: last.delta >= 0 ? C.buyT : C.sellT,
+        });
+      }
+      if (fpSeriesRef.current) {
+        fpSeriesRef.current.setData(candles.map((c) => ({
+          time: c.time, low: c.l, high: c.h, footprint: c.footprint,
+        })));
+      }
     }
-    if (fpSeriesRef.current) {
-      fpSeriesRef.current.setData(candles.map((c) => ({
-        time: c.time, low: c.l, high: c.h, footprint: c.footprint,
-      })));
+
+    // Update VWAP and POC price lines
+    if (vwapLineRef.current && sessionStats.vwap > 0) {
+      vwapLineRef.current.applyOptions({ price: sessionStats.vwap });
     }
+    if (pocLineRef.current && vp.poc > 0) {
+      pocLineRef.current.applyOptions({ price: vp.poc });
+    }
+
     // Scroll to show live data the first time candles arrive
     if (!didInitialFitRef.current && chartRef.current) {
       chartRef.current.timeScale().fitContent();
@@ -414,6 +451,7 @@ function ChartLW(props) {
           <button className={'toggle '+(showVP?'on':'')} onClick={()=>setShowVP(!showVP)}>VP</button>
           <button className={'toggle '+(showVol?'on':'')} onClick={()=>setShowVol(!showVol)}>Vol</button>
           <button className={'toggle '+(showMarkers?'on':'')} onClick={()=>setShowMarkers(!showMarkers)}>Marks</button>
+          <button className={'toggle '+(showIndOverlays?'on':'')} onClick={()=>setShowIndOverlays(!showIndOverlays)} title="Indicator overlays">IND</button>
         </div>
       </div>
 
@@ -430,7 +468,7 @@ function ChartLW(props) {
           onMouseDown={onDown}
           onMouseMove={onMove}
           onMouseUp={onUp}
-          onMouseLeave={() => { if (pending) setPending(null); }}
+          onMouseLeave={() => { if (pending) { setPending(null); setTool('cursor'); } }}
         >
           {/* VP overlay */}
           {showVP && chartRef.current && vp.rows.map((r, i) => {
@@ -446,6 +484,96 @@ function ChartLW(props) {
               </g>
             );
           })}
+
+          {/* ── Indicator Overlays ── */}
+          {showIndOverlays && chartRef.current && (() => {
+            const ind = window.OF_INDICATORS || {};
+
+            // 1. UnfinishedAuction — dashed horizontal lines at open levels
+            const uaLevels = ind.unfinishedAuction?.openLevels || [];
+            const uaElems = uaLevels.map((lvl, i) => {
+              const y = p2y(lvl.px);
+              if (y == null) return null;
+              const col = lvl.type === 'HIGH' ? C.sell : C.buy;
+              return (
+                <g key={'ua'+i}>
+                  <line x1={0} x2={xPxRight} y1={y} y2={y} stroke={col} strokeWidth="1.2" strokeDasharray="4 3" opacity="0.7" />
+                  <text x={xPxRight - 2} y={y - 3} fontSize="8" fill={col} textAnchor="end" fontFamily="JetBrains Mono">
+                    {lvl.type === 'HIGH' ? 'UF↑' : 'UF↓'}
+                  </text>
+                </g>
+              );
+            });
+
+            // 2. DeepWall — solid horizontal lines at active wall prices
+            const walls = ind.deepWall?.activeWalls || [];
+            const wallElems = walls.map((wall, i) => {
+              const y = p2y(wall.px);
+              if (y == null) return null;
+              const col = wall.side === 'ASK' ? C.sell : C.buy;
+              const sw  = wall.domConfirmed ? 2 : 1;
+              return (
+                <g key={'wall'+i}>
+                  <line x1={0} x2={xPxRight} y1={y} y2={y} stroke={col} strokeWidth={sw} opacity="0.6" />
+                  <text x={4} y={y - 3} fontSize="8" fill={col} fontFamily="JetBrains Mono">
+                    WALL {wall.px.toFixed(2)} {wall.domConfirmed ? '●' : ''}
+                  </text>
+                </g>
+              );
+            });
+
+            // 3. ImbalanceTracker — semi-transparent zone bands extending right from bar start
+            const freshZones    = ind.imbalanceTracker?.freshZones    || [];
+            const triggeredZones= ind.imbalanceTracker?.triggeredZones || [];
+            const zoneElems = [
+              ...freshZones.map((z, i) => {
+                const xZ = t2x(z.ts); const y = p2y(z.px);
+                if (xZ == null || y == null) return null;
+                const col = z.side === 'ASK' ? C.buy : C.sell;
+                return <rect key={'fz'+i} x={xZ} y={y-1.5} width={Math.max(0, xPxRight-xZ)} height={3} fill={col} opacity="0.18" />;
+              }),
+              ...triggeredZones.map((z, i) => {
+                const xZ = t2x(z.ts); const y = p2y(z.px);
+                if (xZ == null || y == null) return null;
+                const col = z.side === 'ASK' ? C.buy : C.sell;
+                return <rect key={'tz'+i} x={xZ} y={y-1.5} width={Math.max(0, xPxRight-xZ)} height={3} fill={col} opacity="0.07" strokeDasharray="2 2" />;
+              }),
+            ];
+
+            // 4. ShiftCandle — triangle markers above/below bars at signal timestamps
+            const shiftSigs = (window.OF_INDICATOR_MGR?.shiftCandle?.signals || []).slice(-20);
+            const shiftElems = shiftSigs.map((sig, i) => {
+              const xS = t2x(sig.ts);
+              if (xS == null) return null;
+              const bar = candles.find(c => c.time === sig.ts);
+              const isBuy = sig.type === 'SHIFT_BUY';
+              const refPx = isBuy ? (bar ? bar.l : sig.px) : (bar ? bar.h : sig.px);
+              const y  = p2y(refPx);
+              if (y == null) return null;
+              const col = isBuy ? C.buy : C.sell;
+              const pts = isBuy
+                ? `${xS},${y+10} ${xS-5},${y+18} ${xS+5},${y+18}`
+                : `${xS},${y-10} ${xS-5},${y-18} ${xS+5},${y-18}`;
+              return <polygon key={'sh'+i} points={pts} fill={col} opacity="0.85" />;
+            });
+
+            // 5. DivergenceDetector — small D circles at swing pivot price/time
+            const divs = ind.divergenceDetector?.divergences || [];
+            const divElems = divs.slice(-10).map((d, i) => {
+              const xD = t2x(d.ts); const y = p2y(d.px);
+              if (xD == null || y == null) return null;
+              const col = d.type === 'BEARISH_DIVERGENCE' ? C.sell : C.buy;
+              const yOff = d.type === 'BEARISH_DIVERGENCE' ? -14 : 14;
+              return (
+                <g key={'div'+i}>
+                  <circle cx={xD} cy={y+yOff} r={6} fill={col} opacity="0.8" />
+                  <text x={xD} y={y+yOff+3} textAnchor="middle" fontSize="8" fill={C.bg} fontWeight="700" fontFamily="JetBrains Mono">D</text>
+                </g>
+              );
+            });
+
+            return [...uaElems, ...wallElems, ...zoneElems, ...shiftElems, ...divElems];
+          })()}
 
           {/* Markers */}
           {isFP && showMarkers && chartRef.current && candles.map((c) => {

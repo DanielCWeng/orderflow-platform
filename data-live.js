@@ -18,6 +18,12 @@
   const LARGE_TRADE_MIN = 50;   // contracts — feeds the scanner
   const TIMEFRAME_SEC = 300;    // 5-minute bars
 
+  // ── Indicator manager ──────────────────────────────────────────────
+  const indicatorMgr = new IndicatorManager({
+    barSec: MOCK ? 30 : TIMEFRAME_SEC,
+  });
+  window.OF_INDICATOR_MGR = indicatorMgr;
+
   // ── Seed empty OF_DATA so panels don't crash before auth ──────────────────
   window.OF_DATA = {
     TICK,
@@ -36,6 +42,8 @@
     candles: [],
     last: 0,
     dom: [],
+    domExec: {},
+    domSessionDelta: {},
     vp:  { rows: [], poc: 0, vah: 0, val: 0, total: 0 },
     tpo: { rows: [], periods: [], poc: 0, vah: 0, val: 0, ibHi: 0, ibLo: 0 },
     delta: [],
@@ -47,6 +55,7 @@
 
   // Seed empty stats so chartlwc.js doesn't blow up reading them
   window.OF_FOOTPRINT_STATS = { thr: 3, mean: 2, sigma: 0.8, maxAbsDelta: 1, avgAbsDelta: 1 };
+  window.OF_INDICATORS = { allSignals: [] };
   window.OF_TAPE_STATS = {
     thr: { sm: 2, md: 10, lg: 50 },
     velocity: new Array(28).fill(0),
@@ -64,6 +73,7 @@
   let currentBar = null;  // open bar being built in real time
   let tradeAccum = {};    // { [barTimestamp]: { [pxKey]: {px, bid, ask} } }
   let domState = [];
+  let domSessionDelta = {}; // { [pxKey]: { buy: 0, sell: 0 } } — session-cumulative volume per price
   let tapeBuffer = [];    // newest trade first
   let largeTrades = [];
   let sessionStats = { open: 0, high: 0, low: 0, last: 0, volume: 0, delta: 0, vwap: 0 };
@@ -146,6 +156,7 @@
     ws.onmessage = (evt) => {
       let msg;
       try { msg = JSON.parse(evt.data); } catch { return; }
+      indicatorMgr.onMessage(msg);
       let dirty = false;
       if (msg.q  && msg.q.length)  { handleQuotes(msg.q);    dirty = true; }
       if (msg.d  && msg.d.length)  { handleDepth(msg.d);     dirty = true; }
@@ -196,15 +207,15 @@
       const mid  = sessionStats.last;
       const levels = [];
 
-      // 10 ask levels, highest first (so they display above the mid row)
-      for (let i = Math.min(9, asks.length - 1); i >= 0; i--) {
+      // 5 ask levels, highest first (so they display above the mid row)
+      for (let i = Math.min(4, asks.length - 1); i >= 0; i--) {
         const a = asks[i];
         levels.push({ px: a.p, bid: 0, ask: a.sz ?? a.o ?? 0, cumBid: 0, cumAsk: a.is ?? 0, last: false });
       }
       // mid price
       levels.push({ px: mid, bid: 0, ask: 0, cumBid: 0, cumAsk: 0, last: true });
-      // 10 bid levels below mid
-      for (let i = 0; i < Math.min(10, bids.length); i++) {
+      // 5 bid levels below mid
+      for (let i = 0; i < Math.min(5, bids.length); i++) {
         const b = bids[i];
         levels.push({ px: b.p, bid: b.sz ?? b.o ?? 0, ask: 0, cumBid: b.is ?? 0, cumAsk: 0, last: false });
       }
@@ -261,6 +272,12 @@
         sessionStats.vwap = Math.round((vwapAccum.sumPV / vwapAccum.sumV) / TICK) * TICK;
       }
 
+      // session-cumulative delta per price level
+      const dk = px.toFixed(2);
+      if (!domSessionDelta[dk]) domSessionDelta[dk] = { buy: 0, sell: 0 };
+      if (side === 'ask') domSessionDelta[dk].buy  += size;
+      else                domSessionDelta[dk].sell += size;
+
       // large trade scanner
       if (size >= LARGE_TRADE_MIN) {
         largeTrades.unshift({
@@ -309,7 +326,7 @@
   }
 
   // ── Bar helpers ────────────────────────────────────────────────────────────
-  function snap(px) { return Math.round((px ?? 0) / TICK) * TICK; }
+  function snap(px) { return Math.round(Math.round((px ?? 0) / TICK) * TICK * 100) / 100; }
 
   function makeBar(idx, time, o, h, l, c, vol) {
     return {
@@ -485,7 +502,7 @@
     const maxPx = Math.max(...allBars.map(c => c.h));
     const lo    = Math.floor(minPx / TICK) * TICK;
     const hi    = Math.ceil(maxPx  / TICK) * TICK;
-    const nBins = Math.round((hi - lo) / TICK) + 1;
+    const nBins = Math.min(400, Math.round((hi - lo) / TICK) + 1);
 
     const rows = [];
     for (let b = nBins - 1; b >= 0; b--) {
@@ -560,12 +577,33 @@
       if (!sessionStats.low  || bLo < sessionStats.low)  sessionStats.low  = bLo;
     }
 
+    // Build executed volume map from current bar's trade accumulator
+    const domExec = {};
+    if (currentBar !== null && tradeAccum[currentBar.time]) {
+      for (const [k, v] of Object.entries(tradeAccum[currentBar.time])) {
+        // v.ask = buy-aggressor volume (lifted offer), v.bid = sell-aggressor volume (hit bid)
+        domExec[k] = { buy: v.ask, sell: v.bid };
+      }
+    }
+
+    // Cap domSessionDelta to 500 price levels (keep levels nearest to last price)
+    const dsdKeys = Object.keys(domSessionDelta);
+    if (dsdKeys.length > 500) {
+      const lastPx = sessionStats.last || 0;
+      dsdKeys
+        .sort((a, b) => Math.abs(parseFloat(a) - lastPx) - Math.abs(parseFloat(b) - lastPx))
+        .slice(500)
+        .forEach(k => delete domSessionDelta[k]);
+    }
+
     window.OF_DATA = {
       TICK,
       watchlist: window.OF_DATA.watchlist,
       candles:   allBars,
       last:      sessionStats.last || 0,
       dom:       domState,
+      domExec,
+      domSessionDelta,
       vp:        buildVP(allBars),
       tpo:       buildTPO(allBars),
       delta:     buildDelta(allBars),
@@ -573,6 +611,48 @@
       largeTrades,
       bidAskRatio: buildBidAskRatio(tapeBuffer),
       sessionStats: { ...sessionStats },
+    };
+
+    // Build aggregated signals with normalized timestamps and indicator metadata
+    const INDICATOR_META = [
+      [indicatorMgr.deepTrades,         'DEEP-T', 'S'],
+      [indicatorMgr.deepWall,           'WALL',   'S'],
+      [indicatorMgr.unfinishedAuction,  'UA',     'S'],
+      [indicatorMgr.shiftCandle,        'SHIFT',  'S'],
+      [indicatorMgr.imbalanceTracker,   'IMB',    'S'],
+      [indicatorMgr.deepVTracker,       'VTRK',   'A'],
+      [indicatorMgr.volumeProfile,      'VP',     'A'],
+      [indicatorMgr.deltaCumulative,    'CVD',    'A'],
+      [indicatorMgr.stopSpotter,        'STOP',   'A'],
+      [indicatorMgr.speedOfTape,        'TAPE',   'A'],
+      [indicatorMgr.divergenceDetector, 'DIV',    'A'],
+      [indicatorMgr.patternBuilder,     'PAT',    'A'],
+    ];
+    const cutoffMs = Date.now() - 300_000;
+    const allSignals = [];
+    for (const [ind, shortName, tier] of INDICATOR_META) {
+      if (!ind?.signals) continue;
+      for (const s of ind.signals) {
+        const tsMs = s.ts < 1e10 ? s.ts * 1000 : s.ts;
+        if (tsMs >= cutoffMs) allSignals.push({ ...s, tsMs, ind: shortName, tier });
+      }
+    }
+    allSignals.sort((a, b) => b.tsMs - a.tsMs);
+
+    window.OF_INDICATORS = {
+      deepTrades:        { recentBlocks: indicatorMgr.deepTrades.megaPrints, absorptionLevels: indicatorMgr.deepTrades.state.absorptionLevels },
+      deepWall:          indicatorMgr.deepWall.state,
+      unfinishedAuction: indicatorMgr.unfinishedAuction.state,
+      shiftCandle:       indicatorMgr.shiftCandle.state,
+      imbalanceTracker:  indicatorMgr.imbalanceTracker.state,
+      deepVTracker:      indicatorMgr.deepVTracker.state,
+      volumeProfile:     indicatorMgr.volumeProfile.state,
+      deltaCumulative:   indicatorMgr.deltaCumulative.state,
+      stopSpotter:       indicatorMgr.stopSpotter.state,
+      speedOfTape:       indicatorMgr.speedOfTape.state,
+      divergenceDetector:indicatorMgr.divergenceDetector.state,
+      patternBuilder:    indicatorMgr.patternBuilder.state,
+      allSignals,
     };
 
     document.dispatchEvent(new CustomEvent('of-data-update'));

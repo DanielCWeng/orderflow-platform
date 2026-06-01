@@ -118,14 +118,17 @@ function Sidebar({ open, onToggle, active, onSelect }) {
 
 // ============== DOM Ladder ==============
 function DOMLadder() {
-  const { dom } = window.OF_DATA;
+  const { dom, domExec, domSessionDelta } = window.OF_DATA;
   const maxSize = Math.max(1, ...dom.map((r) => Math.max(r.bid, r.ask)));
+  const lastIdx = dom.findIndex(r => r.last);
+  const anchorIdx = lastIdx >= 0 ? lastIdx : Math.floor(dom.length / 2);
+
   return (
     <div className="panel p-dom">
       <div className="panel-h">
         <span className="title">Depth of Market</span>
         <span className="sep" />
-        <span className="meta">21 LVL · 0.25 TICK</span>
+        <span className="meta">11 LVL · 0.25 TICK</span>
         <span className="spacer" />
         <div className="seg">
           <button className="active">Size</button>
@@ -133,26 +136,67 @@ function DOMLadder() {
         </div>
       </div>
       <div className="dom-head mono">
-        <div style={{ textAlign: 'right' }}>BID×</div>
+        <div style={{ textAlign: 'center' }}>SΔ</div>
+        <div style={{ textAlign: 'right' }}>EXEC</div>
         <div style={{ textAlign: 'right' }}>BID</div>
         <div style={{ textAlign: 'center' }}>PRICE</div>
         <div>ASK</div>
-        <div>×ASK</div>
+        <div>EXEC</div>
+        <div style={{ textAlign: 'center' }}>SΔ</div>
       </div>
       <div className="dom-rows">
         {dom.map((r, i) => {
-          const bidW = r.bid ? (r.bid / maxSize) * 50 : 0;
-          const askW = r.ask ? (r.ask / maxSize) * 50 : 0;
+          const k = r.px.toFixed(2);
+          const bidIntensity = r.bid ? r.bid / maxSize : 0;
+          const askIntensity = r.ask ? r.ask / maxSize : 0;
+          const exec = domExec ? (domExec[k] || { buy: 0, sell: 0 }) : { buy: 0, sell: 0 };
+          const sess = domSessionDelta ? (domSessionDelta[k] || { buy: 0, sell: 0 }) : { buy: 0, sell: 0 };
+
+          // Fade outer levels — dist from last-price row
+          const dist = Math.abs(i - anchorIdx);
+          const opacity = dist >= 4 ? 0.35 : dist >= 3 ? 0.6 : 1;
+
+          // Bar widths
+          const bidW = bidIntensity * 50;
+          const askW = askIntensity * 50;
+
           return (
-            <div key={i} className={'dom-row' + (r.last ? ' last' : '')}>
-              {r.bid ? <div className="bar bid" style={{ width: bidW + '%' }} /> : null}
-              {r.ask ? <div className="bar ask" style={{ width: askW + '%' }} /> : null}
-              <div className="col bidcum">{r.cumBid || ''}</div>
-              <div className="col bidsize">{r.bid || ''}</div>
-              <div className="col price">{fmtPx(r.px)}</div>
-              <div className="col asksize">{r.ask || ''}</div>
-              <div className="col askcum">{r.cumAsk || ''}</div>
-              {r.last ? <span className="arrow">▶</span> : null}
+            <div key={i} className={'dom-row' + (r.last ? ' last' : '')} style={{ opacity }}>
+              {r.bid ? <div className="bar bid" style={{ width: bidW + '%', opacity: 0.28 + bidIntensity * 0.57 }} /> : null}
+              {r.ask ? <div className="bar ask" style={{ width: askW + '%', opacity: 0.28 + askIntensity * 0.57 }} /> : null}
+
+              {/* Session-cumulative sell volume at this price (context: how hard sellers have hit here all day) */}
+              <div className="col biddelta">
+                {sess.sell > 0
+                  ? <span className="dom-delta pull">{fmtK(sess.sell)}</span>
+                  : null}
+              </div>
+
+              {/* Sell-side executions hitting the bid — per-bar */}
+              <div className="col bidcum exec-sell">{exec.sell > 0 ? fmtK(exec.sell) : ''}</div>
+
+              {/* Resting bid size, heat-colored */}
+              <div className="col bidsize" style={r.bid ? { color: `color-mix(in oklab, var(--buy) ${Math.round(30 + bidIntensity * 70)}%, var(--fg-1))` } : undefined}>
+                {r.bid || ''}
+              </div>
+
+              <div className="col price">{r.last ? <span className="last-arrow">▶</span> : null}{fmtPx(r.px)}</div>
+
+              {/* Resting ask size, heat-colored */}
+              <div className="col asksize" style={r.ask ? { color: `color-mix(in oklab, var(--sell) ${Math.round(30 + askIntensity * 70)}%, var(--fg-1))` } : undefined}>
+                {r.ask || ''}
+              </div>
+
+              {/* Buy-side executions lifting the ask — per-bar */}
+              <div className="col askcum exec-buy">{exec.buy > 0 ? fmtK(exec.buy) : ''}</div>
+
+              {/* Session-cumulative buy volume at this price */}
+              <div className="col askdelta">
+                {sess.buy > 0
+                  ? <span className="dom-delta add">{fmtK(sess.buy)}</span>
+                  : null}
+              </div>
+
             </div>
           );
         })}
@@ -163,15 +207,32 @@ function DOMLadder() {
 
 // ============== Time & Sales ==============
 function TapePanel() {
-  const { tape } = window.OF_DATA;
+  const { tape, sessionStats } = window.OF_DATA;
   const stats = window.OF_TAPE_STATS;
+  const indData = window.OF_INDICATORS || {};
+  const [filter, setFilter] = React.useState('lg');
+
   const tps = (stats.velocity[stats.velocity.length - 1] || 0);
-  const hotThr = stats.avgVelocity * 1.4;
+  const hotThr = stats.avgVelocity > 0 ? stats.avgVelocity * 1.4 : Infinity;
   const buyPct = stats.aggressorPct;
   const sellPct = 1 - buyPct;
-
-  // size histogram outlier threshold: last bin or beyond p97 visually
   const histMax = Math.max(...stats.histogram);
+
+  // SpeedOfTapeInstant
+  const sot = indData.speedOfTape || {};
+  const intensity = sot.intensity || 0;
+  const volRate = sot.volumeRate != null ? sot.volumeRate.toFixed(1) : '—';
+  const intensityPct = Math.min(100, (intensity / 3) * 100);
+  const intensityColor = intensity >= 2.5 ? 'var(--sell)' : intensity >= 1.5 ? '#e8c76a' : 'var(--buy-d)';
+
+  // LG+ = top 15% of prints (tier lg or inst), Inst = top 3%
+  const filteredTape = filter === 'all' ? tape
+    : filter === 'lg' ? tape.filter(t => t.tier === 'lg' || t.tier === 'inst')
+    : tape.filter(t => t.tier === 'inst');
+
+  // Session cumulative delta
+  const sessDelta = sessionStats.delta || 0;
+  const deltaBarPct = Math.min(50, Math.abs(sessDelta) / Math.max(1, sessionStats.volume) * 100);
 
   return (
     <div className="panel p-tape">
@@ -181,9 +242,9 @@ function TapePanel() {
         <span className="meta">LAST {tape.length}</span>
         <span className="spacer" />
         <div className="seg">
-          <button className="active">All</button>
-          <button>Lg+</button>
-          <button>Inst</button>
+          <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All</button>
+          <button className={filter === 'lg' ? 'active' : ''} onClick={() => setFilter('lg')}>Lg+</button>
+          <button className={filter === 'inst' ? 'active' : ''} onClick={() => setFilter('inst')}>Inst</button>
         </div>
       </div>
 
@@ -201,6 +262,14 @@ function TapePanel() {
         </div>
 
         <div className="row">
+          <span className="lbl">Intensity</span>
+          <div className="tape-intensity-wrap">
+            <div className="tape-intensity" style={{ width: intensityPct + '%', background: intensityColor }} />
+          </div>
+          <span className="val mono" style={{ color: intensityColor, minWidth: 44, textAlign: 'right' }}>{volRate}<span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>c/s</span></span>
+        </div>
+
+        <div className="row">
           <span className="lbl">Aggressor</span>
           <div className="aggressor">
             <span className={'pct buy'}>{Math.round(buyPct * 100)}%</span>
@@ -210,6 +279,14 @@ function TapePanel() {
             </div>
             <span className={'pct sell'} style={{ textAlign: 'right' }}>{Math.round(sellPct * 100)}%</span>
           </div>
+        </div>
+
+        <div className="row">
+          <span className="lbl">Cum Δ</span>
+          <div className="cumdelta-bar">
+            <div className={'fill ' + (sessDelta >= 0 ? 'pos' : 'neg')} style={{ width: deltaBarPct + '%' }} />
+          </div>
+          <span className={'val mono ' + (sessDelta >= 0 ? 'pos' : 'neg')}>{fmtSigned(sessDelta)}</span>
         </div>
 
         <div className="row">
@@ -232,7 +309,7 @@ function TapePanel() {
         <div style={{ textAlign: 'center' }}>×</div>
       </div>
       <div className="tape-rows">
-        {tape.slice(0, 28).map((t, i) => {
+        {filteredTape.slice(0, 28).map((t, i) => {
           const cls = [
             'tape-row',
             t.side,
@@ -254,71 +331,72 @@ function TapePanel() {
   );
 }
 
-// ============== TPO / Market Profile ==============
-function TPO() {
-  const { tpo } = window.OF_DATA;
-  if (!tpo.rows.length) return (
-    <div className="panel p-tpo">
-      <div className="panel-h"><span className="title">TPO Profile</span></div>
-    </div>
-  );
-  const ROWS = 22;
-  const step = Math.max(1, Math.ceil(tpo.rows.length / ROWS));
-  const display = [];
-  for (let i = 0; i < tpo.rows.length; i += step) {
-    const chunk = tpo.rows.slice(i, i + step);
-    const letters = Array.from(new Set(chunk.flatMap((r) => r.letters)));
-    const px = chunk[0].px;
-    const poc = chunk.some((r) => r.poc);
-    const va = chunk.some((r) => r.va);
-    display.push({ px, letters, poc, va });
-  }
-  return (
-    <div className="panel p-tpo">
-      <div className="panel-h">
-        <span className="title">TPO Profile</span>
-        <span className="sep" />
-        <span className="meta">30M · A–{tpo.periods.length ? tpo.periods[tpo.periods.length - 1].letter : '—'}</span>
-        <span className="spacer" />
-        <span className="meta">IB {tpo.periods.length >= 2 ? `${fmtPx(tpo.ibLo)}–${fmtPx(tpo.ibHi)}` : '—'}</span>
-      </div>
-      <div className="tpo-wrap">
-        <div className="tpo-axis">
-          {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
-            const idx = Math.round(p * Math.max(0, display.length - 1));
-            return <div key={i}>{display[idx] ? fmtPx(display[idx].px) : '—'}</div>;
-          })}
-        </div>
-        <div className="tpo-grid">
-          {display.map((r, i) => {
-            const top = (i / display.length) * 100;
-            const cls = 'row' + (r.poc ? ' poc' : '') + (r.va ? ' va' : '');
-            return (
-              <div key={i} className={cls} style={{ top: top + '%' }}>
-                {r.letters.map((L, j) => {
-                  let kls = 'cell';
-                  if (r.poc && j === Math.floor(r.letters.length / 2)) kls += ' poc';
-                  else if (r.va) kls += ' va';
-                  return <div key={j} className={kls}>{L}</div>;
-                })}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ============== Cumulative Delta ==============
 function DeltaPanel() {
   const { delta, sessionStats } = window.OF_DATA;
+  const [cvdMode, setCvdMode] = React.useState(false);
+  const indData = window.OF_INDICATORS || {};
+  const cvdState = indData.deltaCumulative || {};
+
   if (!delta.length) return (
     <div className="panel p-delta">
       <div className="panel-h"><span className="title">Cumulative Delta</span></div>
     </div>
   );
+
   const W = 1000, H = 100;
+
+  // ── CVD candlestick mode ──────────────────────────────────────────
+  if (cvdMode && cvdState.candlestick && cvdState.candlestick.length > 0) {
+    const bars = cvdState.live ? [...cvdState.candlestick, cvdState.live] : cvdState.candlestick;
+    const allVals = bars.flatMap(b => [b.open, b.high, b.low, b.close]);
+    const cvdMin = Math.min(...allVals);
+    const cvdMax = Math.max(...allVals);
+    const cvdRange = Math.max(cvdMax - cvdMin, 1);
+    const yScale = (v) => H - 4 - ((v - cvdMin) / cvdRange) * (H - 8);
+    const xStep = bars.length > 1 ? W / (bars.length - 1) : W;
+    const lastCvd = cvdState.live?.close ?? cvdState.candlestick[cvdState.candlestick.length - 1]?.close ?? 0;
+
+    return (
+      <div className="panel p-delta">
+        <div className="panel-h">
+          <span className="title">Cumulative Delta</span>
+          <span className="sep" />
+          <span className="meta">CVD</span>
+          <span className="spacer" />
+          <div className="delta-stats">
+            <div className="s"><span className="k">CVD</span><span className={'v ' + (lastCvd >= 0 ? 'pos' : 'neg')}>{fmtSigned(Math.round(lastCvd))}</span></div>
+            <div className="s"><span className="k">Δ Session</span><span className={'v ' + (sessionStats.delta >= 0 ? 'pos' : 'neg')}>{fmtSigned(sessionStats.delta)}</span></div>
+          </div>
+          <button className="toggle on" onClick={() => setCvdMode(false)} title="Switch to bar delta">CVD</button>
+        </div>
+        <div className="delta-wrap">
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }}>
+            <line x1={0} x2={W} y1={yScale(0)} y2={yScale(0)} stroke="var(--line)" strokeDasharray="2 3" />
+            {bars.map((b, i) => {
+              const x = i * xStep;
+              const yO = yScale(b.open), yC = yScale(b.close);
+              const yHi = yScale(b.high), yLo = yScale(b.low);
+              const up = b.close >= b.open;
+              const col = up ? 'var(--buy)' : 'var(--sell)';
+              const bW = Math.max(2, xStep * 0.7);
+              const bodyTop = Math.min(yO, yC), bodyH = Math.max(1, Math.abs(yO - yC));
+              return (
+                <g key={i}>
+                  <line x1={x} x2={x} y1={yHi} y2={yLo} stroke={col} strokeWidth="1" />
+                  <rect x={x - bW/2} y={bodyTop} width={bW} height={bodyH} fill={col} opacity="0.8" />
+                </g>
+              );
+            })}
+            <text x={W - 4} y={12} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">{Math.round(cvdMax)}</text>
+            <text x={W - 4} y={H - 2} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">{Math.round(cvdMin)}</text>
+          </svg>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Default: per-bar delta histogram + cumulative line ────────────
   const xStep = delta.length > 1 ? W / (delta.length - 1) : W;
   const cumMax = Math.max(...delta.map((d) => d.cum));
   const cumMin = Math.min(...delta.map((d) => d.cum));
@@ -342,6 +420,7 @@ function DeltaPanel() {
           <div className="s"><span className="k">Δ Last Bar</span><span className={'v ' + ((delta[delta.length - 1]?.delta ?? 0) >= 0 ? 'pos' : 'neg')}>{fmtSigned(delta[delta.length - 1]?.delta ?? 0)}</span></div>
           <div className="s"><span className="k">VWAP</span><span className="v mono">{fmtPx(sessionStats.vwap)}</span></div>
         </div>
+        <button className="toggle" onClick={() => setCvdMode(true)} title="Switch to CVD candlestick">CVD</button>
       </div>
       <div className="delta-wrap">
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }}>
@@ -382,6 +461,59 @@ function DeltaPanel() {
 // ============== Large Trader Scanner ==============
 function ScannerPanel() {
   const { largeTrades } = window.OF_DATA;
+  const indData = window.OF_INDICATORS || {};
+  const [tab, setTab] = React.useState('large');
+
+  const blocks = (indData.deepTrades?.recentBlocks || []).slice().reverse().slice(0, 50);
+
+  if (tab === 'blocks') {
+    return (
+      <div className="panel p-scanner">
+        <div className="panel-h">
+          <span className="title">Large Trader Scanner</span>
+          <span className="sep" />
+          <span className="spacer" />
+          <div className="seg">
+            <button onClick={() => setTab('large')}>Large</button>
+            <button className="active">Blocks</button>
+          </div>
+          <span className="sep" />
+          <span className="meta">{blocks.length} hits</span>
+        </div>
+        <div className="scan-head scan-row" style={{ gridTemplateColumns: '60px 1fr 50px 50px 60px' }}>
+          <div>TIME</div>
+          <div>PRICE</div>
+          <div style={{ textAlign: 'right' }}>SIDE</div>
+          <div style={{ textAlign: 'right' }}>SIZE</div>
+          <div style={{ textAlign: 'right' }}>TYPE</div>
+        </div>
+        <div className="scan-rows" style={{ overflowY: 'auto' }}>
+          {blocks.map((b, i) => {
+            const tsMs = b.ts < 1e10 ? b.ts * 1000 : b.ts;
+            const timeStr = new Date(tsMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            const isBuy = b.side === 'BUY';
+            return (
+              <div key={i} className="scan-row" style={{ gridTemplateColumns: '60px 1fr 50px 50px 60px' }}>
+                <div className="time">{timeStr}</div>
+                <div className="mono" style={{ color: 'var(--fg-1)' }}>{b.px.toFixed(2)}</div>
+                <div className={'side ' + (isBuy ? 'buy' : 'sell')} style={{ textAlign: 'right', color: isBuy ? 'var(--buy)' : 'var(--sell)' }}>
+                  {isBuy ? 'BUY' : 'SELL'}
+                </div>
+                <div className="size" style={{ textAlign: 'right' }}>{b.sz}</div>
+                <div style={{ textAlign: 'right' }}>
+                  {b.isAbsorption
+                    ? <span className="tag" style={{ background: 'var(--sell-bg)', color: 'var(--sell)', fontSize: 9 }}>ABS</span>
+                    : <span className="tag BLOCK" style={{ fontSize: 9 }}>BLK</span>
+                  }
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="panel p-scanner">
       <div className="panel-h">
@@ -390,10 +522,8 @@ function ScannerPanel() {
         <span className="meta">UNUSUAL SIZE · LAST 30M</span>
         <span className="spacer" />
         <div className="seg">
-          <button className="active">All</button>
-          <button>Blocks</button>
-          <button>Sweeps</button>
-          <button>Icebergs</button>
+          <button className="active">Large</button>
+          <button onClick={() => setTab('blocks')}>Blocks</button>
         </div>
         <span className="sep" />
         <span className="meta">{largeTrades.length} hits</span>
@@ -426,5 +556,64 @@ function ScannerPanel() {
   );
 }
 
+// ============== Indicator Signals Feed ==============
+const SIG_LABELS = {
+  SHIFT_BUY: '↑ SHIFT', SHIFT_SELL: '↓ SHIFT',
+  BLOCK_PRINT: 'BLOCK', ABSORPTION: 'ABS',
+  WALL_DETECTED: 'WALL', WALL_BROKEN: 'BRK',
+  UNFINISHED_HIGH: 'UF ↑', UNFINISHED_LOW: 'UF ↓', AUCTION_RESOLVED: '✓ AUC',
+  ZONE_TRIGGERED: 'IMB',
+  ACCELERATION: 'ACCEL', PRESSURE: 'PRES', EXHAUSTION: 'EXHST', SLOWDOWN: 'SLOW',
+  TAPE_SPIKE: 'SPIKE',
+  BEARISH_DIVERGENCE: 'DIV ↓', BULLISH_DIVERGENCE: 'DIV ↑',
+  BUY_STOP_RUN: 'STOP ↑', SELL_STOP_RUN: 'STOP ↓',
+};
+const BUY_TYPES  = new Set(['SHIFT_BUY', 'UNFINISHED_LOW', 'ACCELERATION', 'BULLISH_DIVERGENCE', 'BUY_STOP_RUN', 'ZONE_TRIGGERED']);
+const SELL_TYPES = new Set(['SHIFT_SELL', 'UNFINISHED_HIGH', 'BEARISH_DIVERGENCE', 'SELL_STOP_RUN', 'WALL_DETECTED']);
+
+function SignalsPanel() {
+  const indData = window.OF_INDICATORS || {};
+  const signals = (indData.allSignals || []).slice(0, 30);
+
+  return (
+    <div className="panel p-signals" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div className="panel-h">
+        <span className="title">Signals</span>
+        <span className="sep" />
+        <span className="meta">LAST 5M · ALL INDICATORS</span>
+        <span className="spacer" />
+        <span className="meta">{signals.length} recent</span>
+      </div>
+      <div className="sig-head">
+        <div>TIME</div>
+        <div>IND</div>
+        <div>TYPE</div>
+        <div style={{ textAlign: 'right' }}>PRICE</div>
+      </div>
+      <div className="sig-rows">
+        {signals.length === 0
+          ? <div className="sig-empty">No signals yet — waiting for bars to close</div>
+          : signals.map((s, i) => {
+              const tsMs = s.tsMs || (s.ts < 1e10 ? s.ts * 1000 : s.ts);
+              const timeStr = new Date(tsMs).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+              const label   = SIG_LABELS[s.type] || s.type;
+              const dir     = BUY_TYPES.has(s.type) ? 'buy' : SELL_TYPES.has(s.type) ? 'sell' : '';
+              const tier    = (s.tier === 'A') ? 'a-tier' : 's-tier';
+              const px      = s.data?.px ?? s.px ?? null;
+              return (
+                <div key={i} className={`sig-row ${dir} ${tier}`}>
+                  <div className="time">{timeStr}</div>
+                  <div className="ind">{s.ind}</div>
+                  <div className="type">{label}</div>
+                  <div className="px">{px != null ? px.toFixed(2) : '—'}</div>
+                </div>
+              );
+            })
+        }
+      </div>
+    </div>
+  );
+}
+
 // ============== Chart (Candle / Footprint) ==============
-Object.assign(window, { Sidebar, DOMLadder, TapePanel, TPO, DeltaPanel, ScannerPanel });
+Object.assign(window, { Sidebar, DOMLadder, TapePanel, DeltaPanel, ScannerPanel, SignalsPanel });

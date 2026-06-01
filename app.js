@@ -45,6 +45,7 @@ function App() {
   const [showVP, setShowVP] = useState(true);
   const [showVol, setShowVol] = useState(true);
   const [showMarkers, setShowMarkers] = useState(true);
+  const [showIndOverlays, setShowIndOverlays] = useState(true);
 
   // sidebar
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -52,8 +53,8 @@ function App() {
   // resizable row heights (px) for the bottom panels in each col-stack
   const [deltaH, setDeltaH] = useState(190);
   const [scannerH, setScannerH] = useState(170);
-  const [tpoH, setTpoH] = useState(220);
-
+  const [domH, setDomH] = useState(300);
+  const [signalsH, setSignalsH] = useState(140);
   // drag handlers
   const dragA1 = (e) => { // chart | delta
     const start = deltaH;
@@ -68,13 +69,17 @@ function App() {
       setDeltaH(Math.max(90, Math.min(520, startD + realDy)));
     });
   };
-  const dragB1 = (e) => { // tape | tpo
-    const start = tpoH;
-    startVerticalDrag(e, (dy) => setTpoH(Math.max(100, Math.min(520, start - dy))));
+  const dragC1 = (e) => { // dom | tape
+    const start = domH;
+    startVerticalDrag(e, (dy) => setDomH(Math.max(180, Math.min(500, start + dy))));
+  };
+  const dragC2 = (e) => { // tape | signals
+    const start = signalsH;
+    startVerticalDrag(e, (dy) => setSignalsH(Math.max(80, Math.min(280, start - dy))));
   };
 
   const ss = window.OF_DATA.sessionStats;
-  const last = window.OF_DATA.last || 0;
+  const last = window.OF_DATA.last ?? 0;
   const open = ss.open || last || 1;
   const chgAbs = last - open;
   const chgPct = open > 0 ? (chgAbs / open) * 100 : 0;
@@ -173,6 +178,7 @@ function App() {
               showVP={showVP} setShowVP={setShowVP}
               showVol={showVol} setShowVol={setShowVol}
               showMarkers={showMarkers} setShowMarkers={setShowMarkers}
+              showIndOverlays={showIndOverlays} setShowIndOverlays={setShowIndOverlays}
             />
           </div>
           <div className="row-divider" onMouseDown={dragA1} title="Drag to resize" />
@@ -185,21 +191,18 @@ function App() {
           </div>
         </div>
 
-        {/* Block B — tape / tpo (resizable) */}
-        <div className="col-stack stack-tape">
+        {/* Block B — DOM / Tape / Signals (resizable) */}
+        <div className="col-stack stack-dom">
+          <div className="panel-slot" style={{ height: domH }}>
+            <DOMLadder />
+          </div>
+          <div className="row-divider" onMouseDown={dragC1} title="Drag to resize" />
           <div className="panel-slot flex">
             <TapePanel />
           </div>
-          <div className="row-divider" onMouseDown={dragB1} title="Drag to resize" />
-          <div className="panel-slot" style={{ height: tpoH }}>
-            <TPO />
-          </div>
-        </div>
-
-        {/* Block C — DOM (fixed, full height) */}
-        <div className="col-stack stack-dom">
-          <div className="panel-slot flex">
-            <DOMLadder />
+          <div className="row-divider" onMouseDown={dragC2} title="Drag to resize" />
+          <div className="panel-slot" style={{ height: signalsH }}>
+            <SignalsPanel />
           </div>
         </div>
       </div>

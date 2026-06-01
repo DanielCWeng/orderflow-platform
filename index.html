@@ -79,8 +79,7 @@
   .panel { background: var(--bg-0); display:flex; flex-direction:column; min-width:0; min-height:0; width: 100%; height: 100%; }
   .col-stack { display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 1px; background: var(--line-soft); }
   .stack-mid  { flex: 1; min-width: 0; }
-  .stack-tape { width: 230px; flex-shrink: 0; }
-  .stack-dom  { width: 220px; flex-shrink: 0; }
+  .stack-dom  { width: 340px; flex-shrink: 0; }
   .panel-slot { display: flex; flex-shrink: 0; min-height: 0; }
   .panel-slot.flex { flex: 1; }
 
@@ -157,25 +156,30 @@
   .wl-row .ch.dn { background: var(--sell-bg); color: var(--sell); }
   .wl-section { padding: 8px var(--pad) 4px; color: var(--fg-3); text-transform: uppercase; font-size: 10px; letter-spacing: 0.1em; }
 
-  .dom-head, .dom-row { display:grid; grid-template-columns: 1fr 1fr 70px 1fr 1fr; align-items:center; height: var(--row-h); font-family:'JetBrains Mono',monospace; font-size: var(--fs-num); }
+  .dom-head, .dom-row { display:grid; grid-template-columns: 32px 44px 1fr 70px 1fr 44px 32px; align-items:center; height: var(--row-h); font-family:'JetBrains Mono',monospace; font-size: var(--fs-num); }
   .dom-head { color: var(--fg-3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding: 0 8px; border-bottom: 1px solid var(--line); height: 24px; }
-  .dom-head > div { padding: 0 6px; }
-  .dom-rows { flex:1; overflow:hidden; padding: 4px 8px; position: relative; }
-  .dom-row { padding: 0 6px; position: relative; }
-  .dom-row .col { padding: 0 6px; position:relative; z-index:1; }
-  .dom-row .col.r { text-align:right; }
-  .dom-row .col.c { text-align:center; }
-  .dom-row .price { color: var(--fg-1); text-align:center; }
-  .dom-row .bidsize { color: var(--buy); text-align:right; }
-  .dom-row .asksize { color: var(--sell); text-align:left; }
-  .dom-row .bidcum { color: var(--fg-3); text-align:right; }
-  .dom-row .askcum { color: var(--fg-3); text-align:left; }
-  .dom-row .bar { position:absolute; top:1px; bottom:1px; z-index: 0; opacity: 0.55; border-radius: 1px; }
-  .dom-row .bar.bid { right: 50%; background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--buy) 28%, transparent)); }
-  .dom-row .bar.ask { left: 50%;  background: linear-gradient(90deg, color-mix(in oklab, var(--sell) 28%, transparent), transparent); }
+  .dom-head > div { padding: 0 4px; }
+  .dom-rows { flex:1; overflow:hidden; padding: 0; position: relative; display:flex; flex-direction:column; justify-content:center; }
+  .dom-row { padding: 0 8px; position: relative; overflow: hidden; border-bottom: 1px solid color-mix(in oklab, var(--line) 45%, transparent); flex-shrink:0; }
+  .dom-row .col { padding: 0 6px; position:relative; z-index:1; display:flex; align-items:center; }
+  .dom-row .price { color: var(--fg-1); justify-content:center; }
+  .dom-row .bidsize { justify-content:flex-end; }
+  .dom-row .asksize { justify-content:flex-start; }
+  .dom-row .bidcum { color: var(--fg-3); justify-content:flex-end; }
+  .dom-row .askcum { color: var(--fg-3); justify-content:flex-start; }
+  .dom-row .biddelta { justify-content:center; padding: 0 3px; }
+  .dom-row .askdelta { justify-content:center; padding: 0 3px; }
+  .dom-row .exec-sell { color: color-mix(in oklab, var(--sell) 65%, var(--fg-3)); font-size: calc(var(--fs-num) - 1px); }
+  .dom-row .exec-buy  { color: color-mix(in oklab, var(--buy)  65%, var(--fg-3)); font-size: calc(var(--fs-num) - 1px); }
+  .dom-row .bar { position:absolute; top:1px; bottom:1px; z-index: 0; border-radius: 2px; }
+  .dom-row .bar.bid { right: 50%; background: oklch(0.46 0.17 255); }
+  .dom-row .bar.ask { left: 50%;  background: oklch(0.48 0.22 22); }
   .dom-row.last { background: var(--bg-2); }
   .dom-row.last .price { color: var(--fg-0); font-weight:600; }
-  .dom-row .arrow { position:absolute; left: 50%; transform: translate(-50%, 0); top: -7px; color: var(--fg-2); font-size: 9px; }
+  .dom-row .last-arrow { color: var(--accent); font-size: 8px; margin-right: 3px; }
+  .dom-delta { font-size: 8px; font-weight: 700; letter-spacing: -0.02em; padding: 1px 3px; border-radius: 2px; white-space: nowrap; }
+  .dom-delta.pull { color: var(--sell); background: color-mix(in oklab, var(--sell) 12%, transparent); }
+  .dom-delta.add  { color: var(--buy);  background: color-mix(in oklab, var(--buy)  12%, transparent); }
 
   .vp-rows { flex:1; padding: 6px 10px; display:flex; flex-direction:column; justify-content:space-between; }
   .vp-row { display:grid; grid-template-columns: 56px 1fr; align-items:center; gap: 8px; height: 14px; font-family:'JetBrains Mono',monospace; font-size: 10px; color: var(--fg-2); }
@@ -190,13 +194,6 @@
   .vp-legend { display:flex; gap: 14px; padding: 4px 12px; color: var(--fg-3); font-size: 10px; border-top: 1px solid var(--line-soft); font-family:'JetBrains Mono', monospace; }
   .vp-legend span b { color: var(--fg-1); font-weight: 500; }
 
-  .tpo-wrap { flex:1; padding: 6px 10px; display:flex; gap:10px; overflow:hidden; }
-  .tpo-axis { display:flex; flex-direction:column; justify-content:space-between; font-family:'JetBrains Mono',monospace; font-size:9.5px; color: var(--fg-3); }
-  .tpo-grid { flex:1; position:relative; }
-  .tpo-grid .row { position:absolute; left:0; right:0; height: 11px; display:flex; gap: 1px; align-items:center; padding-left: 2px; }
-  .tpo-grid .cell { font-family:'JetBrains Mono',monospace; font-size: 9px; color: var(--fg-2); width: 9px; height: 9px; display:flex; align-items:center; justify-content:center; border-radius: 1px; }
-  .tpo-grid .cell.va { background: color-mix(in oklab, var(--buy) 18%, transparent); color: var(--buy); }
-  .tpo-grid .cell.poc { background: var(--fg-0); color: var(--bg-0); font-weight:700; }
 
   .delta-wrap { flex:1; padding: 8px 12px; position: relative; min-height: 0; }
   .delta-stats { display:flex; gap: 18px; padding: 0 12px 4px; font-size: 10.5px; }
@@ -285,18 +282,32 @@
   .tape-row .p { text-align: right; padding-right: 8px; }
   .tape-row .s { text-align: right; padding-right: 4px; }
   .tape-row .clu { text-align: center; font-size: 9px; color: var(--fg-3); font-weight: 500; }
-  .tape-row.bid .p, .tape-row.bid .s { color: color-mix(in oklab, var(--sell) 70%, var(--fg-1)); }
-  .tape-row.ask .p, .tape-row.ask .s { color: color-mix(in oklab, var(--buy) 70%, var(--fg-1)); }
+  /* Binary high-contrast aggressor colour — full green/red, tier escalates intensity */
+  .tape-row.bid .p, .tape-row.bid .s { color: var(--sell); }
+  .tape-row.ask .p, .tape-row.ask .s { color: var(--buy); }
+  /* sm: just colour, no background — whispers */
+  .tape-row.tier-sm .p, .tape-row.tier-sm .s { opacity: 0.55; }
+  /* md: subtle tint */
   .tape-row.tier-md { background: color-mix(in oklab, currentColor 4%, transparent); }
-  .tape-row.tier-lg.ask { background: color-mix(in oklab, var(--buy) 16%, transparent); }
-  .tape-row.tier-lg.bid { background: color-mix(in oklab, var(--sell) 16%, transparent); }
-  .tape-row.tier-lg .s { font-weight: 600; }
-  .tape-row.tier-inst.ask { background: color-mix(in oklab, var(--buy) 30%, transparent); border-left: 2px solid var(--buy); padding-left: 8px; }
-  .tape-row.tier-inst.bid { background: color-mix(in oklab, var(--sell) 30%, transparent); border-left: 2px solid var(--sell); padding-left: 8px; }
-  .tape-row.tier-inst .p, .tape-row.tier-inst .s { color: var(--fg-0); font-weight: 600; }
+  /* lg: stronger background, bold size — talks */
+  .tape-row.tier-lg.ask { background: color-mix(in oklab, var(--buy) 18%, transparent); }
+  .tape-row.tier-lg.bid { background: color-mix(in oklab, var(--sell) 18%, transparent); }
+  .tape-row.tier-lg .s { font-weight: 700; }
+  /* inst: screams — full tint, accent border, larger size number */
+  .tape-row.tier-inst.ask { background: color-mix(in oklab, var(--buy) 32%, transparent); border-left: 2px solid var(--buy); padding-left: 8px; }
+  .tape-row.tier-inst.bid { background: color-mix(in oklab, var(--sell) 32%, transparent); border-left: 2px solid var(--sell); padding-left: 8px; }
+  .tape-row.tier-inst .p { color: var(--fg-0); font-weight: 700; font-size: calc(var(--fs-num) + 1px); }
+  .tape-row.tier-inst .s { color: var(--fg-0); font-weight: 700; font-size: calc(var(--fs-num) + 1px); }
   .tape-row.tier-inst .t { color: var(--fg-1); }
   .tape-row.cluster .clu { color: var(--fg-0); background: var(--bg-3); border-radius: 2px; padding: 1px 3px; }
   .tape-row.cluster-strong .p { text-decoration: underline; text-decoration-color: var(--fg-2); text-underline-offset: 2px; }
+  /* Cumulative delta bar in tape-stats */
+  .cumdelta-bar { flex: 1; height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden; position: relative; }
+  .cumdelta-bar .fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+  .cumdelta-bar .fill.pos { background: var(--buy); left: 50%; }
+  .cumdelta-bar .fill.neg { background: var(--sell); right: 50%; }
+  .tape-stats .val.pos { color: var(--buy); }
+  .tape-stats .val.neg { color: var(--sell); }
 
   .scan-row {
     display:grid; grid-template-columns: 60px 50px 1fr 60px 64px 70px 50px;
@@ -370,6 +381,22 @@
     font-size: 10px; color: var(--sell); min-height: 12px;
     font-family: 'JetBrains Mono', monospace;
   }
+
+  /* ── Indicator panels ────────────────────────────────────────────── */
+  .tape-intensity-wrap { flex: 1; height: 4px; background: var(--bg-3); border-radius: 2px; overflow: hidden; }
+  .tape-intensity      { height: 100%; border-radius: 2px; transition: width 0.3s, background 0.3s; }
+
+  .sig-head, .sig-row  { display:grid; grid-template-columns: 52px 36px 1fr 62px; gap: 0 var(--gap); padding: 0 var(--pad-sm); align-items:center; }
+  .sig-head            { height: 18px; color: var(--fg-3); font-size: var(--fs-h); text-transform: uppercase; letter-spacing:.05em; border-bottom: 1px solid var(--line-soft); flex-shrink:0; }
+  .sig-rows            { overflow-y: auto; flex: 1; min-height: 0; }
+  .sig-row             { height: var(--row-h); font-size: var(--fs-num); font-family: 'JetBrains Mono', monospace; border-bottom: 1px solid var(--line-soft); }
+  .sig-row .ind        { color: var(--fg-3); font-size: 10px; }
+  .sig-row .type       { color: var(--fg-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sig-row .px         { text-align: right; color: var(--fg-2); }
+  .sig-row.buy .type   { color: var(--buy); }
+  .sig-row.sell .type  { color: var(--sell); }
+  .sig-row.a-tier      { opacity: 0.72; }
+  .sig-empty           { padding: var(--pad-sm); color: var(--fg-3); font-size: var(--fs-h); text-align: center; }
 </style>
 </head>
 <body>
@@ -396,6 +423,7 @@
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 
+<script src="indicators.js"></script>
 <script src="data-live.js"></script>
 <script type="text/babel" src="panels.js"></script>
 <script type="text/babel" src="chartlwc.js"></script>
