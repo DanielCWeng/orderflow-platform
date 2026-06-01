@@ -14,6 +14,7 @@ const DrawIcons = {
 
 // === Custom Series: Footprint cells ===
 function createFootprintSeriesView() {
+  const TICK = 0.25;
   const renderer = {
     _data: null,
     _opts: null,
@@ -24,73 +25,224 @@ function createFootprintSeriesView() {
         const ctx = scope.context;
         const bars = data.bars;
         if (!bars || bars.length === 0) return;
+        const canvasH = ctx.canvas.height;
 
-        let barSpacing = 38; // default for footprint mode
-        for (let i = 1; i < Math.min(bars.length, 10); i++) {
-          const dx = bars[i].x - bars[i - 1].x;
-          if (dx > 0) { barSpacing = dx; break; }
+        // --- Measure barSpacing ---
+        let barSpacing = opts.barSpacing || 0;
+        if (!barSpacing) {
+          const dxSamples = [];
+          for (let i = 1; i < Math.min(bars.length, 12); i++) {
+            const dx = bars[i].x - bars[i - 1].x;
+            if (dx > 0) dxSamples.push(dx);
+          }
+          if (dxSamples.length > 0) {
+            dxSamples.sort((a, b) => a - b);
+            barSpacing = dxSamples[Math.floor(dxSamples.length / 2)];
+          } else {
+            barSpacing = 38;
+          }
         }
-        const cellW = Math.max(2, barSpacing * 0.86);
-        const cellH = Math.min(12, Math.max(6, barSpacing * 0.55));
-        const tFont = cellH < 9 ? 6 : 6.8;
-        const { mode, showDelta, showImb, buyColor, sellColor } = opts;
 
-        ctx.font = `${tFont}px 'JetBrains Mono', ui-monospace, monospace`;
+        const { mode, showDelta, showImb, buyColor, sellColor, bg } = opts;
+
+        // --- Measure pxPerTick ---
+        let pxPerTick = 0;
+        for (const bar of bars) {
+          const od = bar.originalData;
+          const refPrice = od.close ?? od.c;
+          if (refPrice == null) continue;
+          const y0 = priceConverter(refPrice);
+          const y1 = priceConverter(refPrice + TICK);
+          if (y0 != null && y1 != null) { pxPerTick = Math.abs(y1 - y0); break; }
+        }
+
+        const showFP = barSpacing >= 28 && pxPerTick >= 6;
+
+        // --- Draw candles ---
+        const candleW = showFP ? Math.max(3, barSpacing * 0.07) : Math.max(3, barSpacing * 0.6);
+        for (const bar of bars) {
+          const od = bar.originalData;
+          const yO = priceConverter(od.open ?? od.o);
+          const yC = priceConverter(od.close ?? od.c);
+          const yH = priceConverter(od.high ?? od.h);
+          const yL = priceConverter(od.low ?? od.l);
+          if (yO == null || yC == null || yH == null || yL == null) continue;
+          const isUp = (od.close ?? od.c) >= (od.open ?? od.o);
+          const col = isUp ? buyColor : sellColor;
+          const bodyTop = Math.min(yO, yC);
+          const bodyH = Math.max(1, Math.abs(yC - yO));
+          if (!showFP) {
+            ctx.fillStyle = col;
+            ctx.fillRect(bar.x - 0.5, Math.min(yH, yL), 1, Math.abs(yL - yH));
+            if (isUp) {
+              ctx.strokeStyle = col; ctx.lineWidth = 1;
+              ctx.strokeRect(bar.x - candleW / 2, bodyTop, candleW, bodyH);
+            } else {
+              ctx.fillRect(bar.x - candleW / 2, bodyTop, candleW, bodyH);
+            }
+          } else {
+            const candleX = bar.x - barSpacing * 0.43;
+            ctx.fillStyle = col;
+            ctx.fillRect(candleX - 0.5, Math.min(yH, yL), 1, Math.abs(yL - yH));
+            ctx.fillRect(candleX - candleW / 2, bodyTop, candleW, bodyH);
+          }
+        }
+
+        if (!showFP) return;
+
+        // --- Footprint cells (optimised) ---
+        const cellH = pxPerTick;
+        const tFont = 11;
+        const candleColW = candleW + 3;
+        const fpAreaW = barSpacing * 0.86 - candleColW;
+        const gapW = Math.max(1, fpAreaW * 0.02);
+        const colW = (fpAreaW - gapW) / 2;
+        if (colW < 3) return;
+        const showText = colW > 18 && cellH >= 12;
+
+        // Y-axis viewport cull margin
+        const cullTop = -cellH;
+        const cullBot = canvasH + cellH;
+
+        // Set text properties once (not per-cell)
+        ctx.font = `700 ${tFont}px 'JetBrains Mono', ui-monospace, monospace`;
+        ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+
+        const isBidAsk = mode === 'bidask';
+        const isProfile = mode === 'profile';
+        const showDeltaText = showDelta && showText && !isBidAsk;
 
         for (const bar of bars) {
           const fp = bar.originalData.footprint;
           if (!fp || !fp.length) continue;
-          const rowMax = Math.max(...fp.map((f) => Math.max(f.bid, f.ask)));
-          const rowTotalMax = Math.max(...fp.map((f) => f.bid + f.ask));
 
-          for (const f of fp) {
-            const y = priceConverter(f.px);
-            if (y == null) continue;
-            const yT = y - cellH / 2;
-            const xL = bar.x - cellW / 2;
-            const dl = f.ask - f.bid;
-            const rowTotal = f.bid + f.ask;
+          // Per-bar max — avoid spread operator on large arrays
+          let barMax = 1, rowTotalMax = 1;
+          for (let i = 0; i < fp.length; i++) {
+            const b = fp[i].bid, a = fp[i].ask;
+            if (b > barMax) barMax = b;
+            if (a > barMax) barMax = a;
+            const t = b + a;
+            if (t > rowTotalMax) rowTotalMax = t;
+          }
+          const invBarMax = 1 / barMax;
 
-            if (mode === 'bidask') {
-              const askA = Math.min(0.55, 0.06 + (f.ask / Math.max(1, rowMax)) * 0.5);
-              const bidA = Math.min(0.55, 0.06 + (f.bid / Math.max(1, rowMax)) * 0.5);
-              ctx.globalAlpha = bidA;
-              ctx.fillStyle = sellColor;
-              ctx.fillRect(xL, yT, cellW / 2, cellH - 1);
-              ctx.globalAlpha = askA;
-              ctx.fillStyle = buyColor;
-              ctx.fillRect(bar.x, yT, cellW / 2, cellH - 1);
+          const barLeft = bar.x - barSpacing * 0.43;
+          const bidX = barLeft + candleColW;
+          const askX = bidX + colW + gapW;
+          const bidCX = Math.round(bidX + colW / 2);
+          const askCX = Math.round(askX + colW / 2);
+
+          // --- Pass 1: background fills (batch by color to minimise fillStyle swaps) ---
+          if (isBidAsk) {
+            ctx.fillStyle = sellColor;
+            for (let i = 0; i < fp.length; i++) {
+              const y = priceConverter(fp[i].px);
+              if (y == null || y < cullTop || y > cullBot) continue;
+              const yT = y - cellH / 2 + 0.5;
+              const boxH = cellH - 1;
+              ctx.globalAlpha = 0.10 + Math.min(1, fp[i].bid * invBarMax) * 0.65;
+              ctx.fillRect(bidX, yT, colW, boxH);
+            }
+            ctx.fillStyle = buyColor;
+            for (let i = 0; i < fp.length; i++) {
+              const y = priceConverter(fp[i].px);
+              if (y == null || y < cullTop || y > cullBot) continue;
+              const yT = y - cellH / 2 + 0.5;
+              const boxH = cellH - 1;
+              ctx.globalAlpha = 0.10 + Math.min(1, fp[i].ask * invBarMax) * 0.65;
+              ctx.fillRect(askX, yT, colW, boxH);
+            }
+
+            // --- Imbalance overlay (before text so text draws on top) ---
+            if (showImb) {
+              for (let i = 0; i < fp.length; i++) {
+                const f = fp[i];
+                if (!f.askImb && !f.bidImb) continue;
+                const y = priceConverter(f.px);
+                if (y == null || y < cullTop || y > cullBot) continue;
+                const yT = y - cellH / 2 + 0.5;
+                const boxH = cellH - 1;
+                ctx.globalAlpha = 0.45;
+                if (f.askImb) { ctx.fillStyle = buyColor; ctx.fillRect(askX, yT, colW, boxH); }
+                if (f.bidImb) { ctx.fillStyle = sellColor; ctx.fillRect(bidX, yT, colW, boxH); }
+              }
+            }
+
+            // --- Pass 2: all text in one batch ---
+            if (showText) {
+              ctx.fillStyle = '#ffffff';
               ctx.globalAlpha = 1;
-            } else if (mode === 'profile') {
-              const w = (rowTotal / Math.max(1, rowTotalMax)) * cellW;
-              ctx.globalAlpha = 0.55;
+              if (showDelta) {
+                // Delta mode: single centered column with net delta per row
+                for (let i = 0; i < fp.length; i++) {
+                  const f = fp[i];
+                  const y = priceConverter(f.px);
+                  if (y == null || y < cullTop || y > cullBot) continue;
+                  const dl = f.ask - f.bid;
+                  ctx.fillText((dl >= 0 ? '+' : '') + dl, bar.x, Math.round(y + 0.5));
+                }
+              } else {
+                for (let i = 0; i < fp.length; i++) {
+                  const f = fp[i];
+                  const y = priceConverter(f.px);
+                  if (y == null || y < cullTop || y > cullBot) continue;
+                  const textY = Math.round(y + 0.5);
+                  ctx.fillText('' + f.bid, bidCX, textY);
+                  ctx.fillText('' + f.ask, askCX, textY);
+                }
+              }
+            }
+          } else if (isProfile) {
+            const totalW = barSpacing * 0.86;
+            const xL = bar.x - totalW / 2;
+            ctx.globalAlpha = 0.55;
+            for (let i = 0; i < fp.length; i++) {
+              const f = fp[i];
+              const y = priceConverter(f.px);
+              if (y == null || y < cullTop || y > cullBot) continue;
+              const yT = y - cellH / 2 + 0.5;
+              const boxH = cellH - 1;
+              const dl = f.ask - f.bid;
+              const rowTotal = f.bid + f.ask;
+              const w = (rowTotal / rowTotalMax) * totalW;
               ctx.fillStyle = dl >= 0 ? buyColor : sellColor;
-              ctx.fillRect(xL, yT + 1, w, cellH - 2);
+              ctx.fillRect(xL, yT + 1, w, boxH - 1);
+            }
+            ctx.globalAlpha = 1;
+
+            if (showImb) {
+              const xL2 = bar.x - totalW / 2;
+              ctx.globalAlpha = 0.35;
+              for (let i = 0; i < fp.length; i++) {
+                const f = fp[i];
+                if (!f.askImb && !f.bidImb) continue;
+                const y = priceConverter(f.px);
+                if (y == null || y < cullTop || y > cullBot) continue;
+                const yT = y - cellH / 2 + 0.5;
+                const boxH = cellH - 1;
+                ctx.fillStyle = f.askImb ? buyColor : sellColor;
+                ctx.fillRect(xL2, yT, totalW, boxH);
+              }
               ctx.globalAlpha = 1;
             }
 
-            if (showDelta && cellW > 13) {
-              ctx.fillStyle = dl >= 0 ? buyColor : sellColor;
-              ctx.textAlign = 'center';
-              ctx.fillText((dl >= 0 ? '+' : '') + dl, bar.x, yT + cellH / 2);
-            } else if (mode === 'bidask' && cellW > 22) {
-              ctx.fillStyle = sellColor;
-              ctx.textAlign = 'right';
-              ctx.fillText(f.bid, bar.x - 1, yT + cellH / 2);
-              ctx.fillStyle = buyColor;
-              ctx.textAlign = 'left';
-              ctx.fillText(f.ask, bar.x + 1, yT + cellH / 2);
-            }
-
-            if (showImb && (f.askImb || f.bidImb)) {
+            // Delta text
+            if (showDeltaText) {
+              ctx.fillStyle = '#ffffff';
               ctx.globalAlpha = 1;
-              ctx.strokeStyle = f.askImb ? buyColor : sellColor;
-              ctx.lineWidth = 1.2;
-              ctx.strokeRect(xL + 0.5, yT + 0.5, cellW - 1, cellH - 2);
+              for (let i = 0; i < fp.length; i++) {
+                const f = fp[i];
+                const y = priceConverter(f.px);
+                if (y == null || y < cullTop || y > cullBot) continue;
+                const dl = f.ask - f.bid;
+                ctx.fillText((dl >= 0 ? '+' : '') + dl, bar.x, Math.round(y + 0.5));
+              }
             }
           }
         }
+        ctx.globalAlpha = 1;
       });
     },
   };
@@ -99,7 +251,7 @@ function createFootprintSeriesView() {
     _r: renderer,
     defaultOptions() {
       return {
-        mode: 'bidask', showDelta: true, showImb: true,
+        mode: 'bidask', showDelta: true, showImb: true, barSpacing: 38,
         buyColor: '#aac9dc', sellColor: '#e9ab9b', bg: '#0e1116', fg: '#f3ecdb',
         priceLineVisible: false, lastValueVisible: false,
       };
@@ -126,12 +278,15 @@ function ChartLW(props) {
     showDelta, setShowDelta,
     showImb, setShowImb,
     showVP, setShowVP,
+    showDailyVP, setShowDailyVP,
+    showWeeklyVP, setShowWeeklyVP,
     showVol, setShowVol,
     showMarkers, setShowMarkers,
     showIndOverlays, setShowIndOverlays,
   } = props;
 
-  const { candles, sessionStats, vp } = window.OF_DATA;
+  const { candles, sessionStats, vp, dailyVP, weeklyVP } = window.OF_DATA;
+  const [vpStripMode, setVpStripMode] = React.useState('session'); // 'session' | 'orderflow'
   const fps = window.OF_FOOTPRINT_STATS;
   const TICK = 0.25;
   const isFP = mode !== 'candle';
@@ -230,10 +385,16 @@ function ChartLW(props) {
     });
 
     const vols = chart.addHistogramSeries({
-      priceScaleId: '',
+      priceScaleId: 'vol',
       priceFormat: { type: 'volume' },
+      lastValueVisible: false,
     });
-    vols.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    vols.priceScale().applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 },
+      drawTicks: false,
+      borderVisible: false,
+      visible: false,
+    });
     vols.setData(candles.map((c) => ({
       time: c.time,
       value: c.vol,
@@ -260,7 +421,7 @@ function ChartLW(props) {
         lastValueVisible: false,
       });
       fpSeries.setData(candles.map((c) => ({
-        time: c.time, low: c.l, high: c.h, footprint: c.footprint,
+        time: c.time, open: c.o, close: c.c, low: c.l, high: c.h, footprint: c.footprint,
       })));
       fpSeriesRef.current = fpSeries;
     } catch (e) {
@@ -272,6 +433,12 @@ function ChartLW(props) {
 
     const onRangeChange = () => {
       try { setPsWidth(chart.priceScale('right').width()); } catch (e) {}
+      // Pass authoritative barSpacing to the custom series so it doesn't have to guess
+      try {
+        if (fpSeriesRef.current) {
+          fpSeriesRef.current.applyOptions({ barSpacing: chart.timeScale().options().barSpacing });
+        }
+      } catch (e) {}
       forceRender();
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
@@ -295,22 +462,32 @@ function ChartLW(props) {
     return () => { ro.disconnect(); try { chart.remove(); } catch(e){} chartRef.current = null; };
   }, []);
 
+
   // Volume series visibility
   React.useEffect(() => {
-    if (!volSeriesRef.current || !chartRef.current) return;
+    if (!volSeriesRef.current) return;
     volSeriesRef.current.applyOptions({ visible: showVol });
-    chartRef.current.priceScale('right').applyOptions({
-      scaleMargins: { top: 0.06, bottom: showVol ? 0.22 : 0.05 },
-    });
   }, [showVol]);
 
+  // Track previous mode so we only reset barSpacing on candle↔FP transitions
+  const prevModeRef = React.useRef(mode);
   // Footprint mode / overlays
   React.useEffect(() => {
     if (fpSeriesRef.current) {
       fpSeriesRef.current.applyOptions({ mode, showDelta, showImb });
     }
+    // Hide main candlestick in FP mode — the custom renderer draws a thin candle instead
+    if (seriesRef.current) {
+      seriesRef.current.applyOptions({ visible: mode === 'candle' });
+    }
+    // Only reset barSpacing when crossing between candle and FP modes, not on every toggle
     if (chartRef.current) {
-      chartRef.current.timeScale().applyOptions({ barSpacing: mode === 'candle' ? 14 : 38 });
+      const wasFP = prevModeRef.current !== 'candle';
+      const isFPNow = mode !== 'candle';
+      if (wasFP !== isFPNow) {
+        chartRef.current.timeScale().applyOptions({ barSpacing: isFPNow ? 38 : 14 });
+      }
+      prevModeRef.current = mode;
     }
   }, [mode, showDelta, showImb]);
 
@@ -333,7 +510,7 @@ function ChartLW(props) {
       }
       if (fpSeriesRef.current) {
         fpSeriesRef.current.setData(candles.map((c) => ({
-          time: c.time, low: c.l, high: c.h, footprint: c.footprint,
+          time: c.time, open: c.o, close: c.c, low: c.l, high: c.h, footprint: c.footprint,
         })));
       }
       prevCandleCountRef.current = newCount;
@@ -350,7 +527,7 @@ function ChartLW(props) {
       }
       if (fpSeriesRef.current) {
         fpSeriesRef.current.setData(candles.map((c) => ({
-          time: c.time, low: c.l, high: c.h, footprint: c.footprint,
+          time: c.time, open: c.o, close: c.c, low: c.l, high: c.h, footprint: c.footprint,
         })));
       }
     }
@@ -449,10 +626,21 @@ function ChartLW(props) {
         <span className="sep" />
         <div className="seg">
           <button className={'toggle '+(showVP?'on':'')} onClick={()=>setShowVP(!showVP)}>VP</button>
+          <button className={'toggle '+(showDailyVP?'on':'')} onClick={()=>setShowDailyVP(!showDailyVP)} title="Daily Volume Profile">DlyVP</button>
+          <button className={'toggle '+(showWeeklyVP?'on':'')} onClick={()=>setShowWeeklyVP(!showWeeklyVP)} title="Weekly Volume Profile">WkVP</button>
           <button className={'toggle '+(showVol?'on':'')} onClick={()=>setShowVol(!showVol)}>Vol</button>
           <button className={'toggle '+(showMarkers?'on':'')} onClick={()=>setShowMarkers(!showMarkers)}>Marks</button>
           <button className={'toggle '+(showIndOverlays?'on':'')} onClick={()=>setShowIndOverlays(!showIndOverlays)} title="Indicator overlays">IND</button>
         </div>
+        {showMarkers && fps && (<>
+          <span className="sep" />
+          <div className="fp-legend-inline">
+            <span className="chip imb"><span className="sw" /> Imb ≥{fps.thr.toFixed(1)}×</span>
+            <span className="chip imbs"><span className="sw" /> Stacked</span>
+            <span className="chip abs"><span className="sw" /> Absorp</span>
+            <span className="chip unf"><span className="sw" /> Unfin</span>
+          </div>
+        </>)}
       </div>
 
       <div className="chart-canvas">
@@ -470,20 +658,98 @@ function ChartLW(props) {
           onMouseUp={onUp}
           onMouseLeave={() => { if (pending) { setPending(null); setTool('cursor'); } }}
         >
-          {/* VP overlay */}
-          {showVP && chartRef.current && vp.rows.map((r, i) => {
-            const y = p2y(r.px);
-            if (y == null) return null;
-            const total = r.buy + r.sell;
-            const w = (total / vpMax) * vpWidth;
-            const buyW = (r.buy / vpMax) * vpWidth;
+          {/* VP overlay removed — rendered in strip below chart */}
+
+          {/* ── Daily Volume Profile overlay (right side) ── */}
+          {showDailyVP && chartRef.current && dailyVP && (() => {
+            // Use the last (most recent) day's VP
+            const dvp = dailyVP[dailyVP.length - 1];
+            if (!dvp || !dvp.rows.length) return null;
+            const dvpMax = Math.max(1, ...dvp.rows.map(r => r.buy + r.sell));
+            const dvpWidth = Math.max(30, W * 0.05);
+            const dvpX0 = xPxRight - dvpWidth;
             return (
-              <g key={'vp'+i}>
-                <rect x={xPxRight - w} y={y - 1.2} width={w - buyW} height={2.4} fill={C.sell} opacity={r.poc ? 0.55 : 0.30} />
-                <rect x={xPxRight - buyW} y={y - 1.2} width={buyW} height={2.4} fill={C.buy} opacity={r.poc ? 0.60 : 0.34} />
+              <g opacity="0.55">
+                {dvp.rows.map((r, i) => {
+                  const y = p2y(r.px);
+                  if (y == null) return null;
+                  const total = r.buy + r.sell;
+                  const w = (total / dvpMax) * dvpWidth;
+                  const col = r.va ? '#f0920a' : '#eedd00';
+                  return (
+                    <rect key={'dvp'+i} x={xPxRight - w} y={y - 1.2} width={w} height={2.4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
+                  );
+                })}
+                {/* VAH line */}
+                {(() => { const y = p2y(dvp.vah); return y != null ? (
+                  <g>
+                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#f0920a" strokeWidth="1" strokeDasharray="4 3" opacity="0.6" />
+                    <text x={dvpX0 - 4} y={y + 3} fontSize="8" fill="#f0920a" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">VAH</text>
+                  </g>
+                ) : null; })()}
+                {/* VAL line */}
+                {(() => { const y = p2y(dvp.val); return y != null ? (
+                  <g>
+                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#f0920a" strokeWidth="1" strokeDasharray="4 3" opacity="0.6" />
+                    <text x={dvpX0 - 4} y={y + 3} fontSize="8" fill="#f0920a" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">VAL</text>
+                  </g>
+                ) : null; })()}
+                {/* POC line */}
+                {(() => { const y = p2y(dvp.poc); return y != null ? (
+                  <g>
+                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#eedd00" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.5" />
+                    <text x={dvpX0 - 4} y={y + 3} fontSize="8" fill="#eedd00" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">POC</text>
+                  </g>
+                ) : null; })()}
               </g>
             );
-          })}
+          })()}
+
+          {/* ── Weekly Volume Profile overlay (right side, bars point left) ── */}
+          {showWeeklyVP && chartRef.current && weeklyVP && (() => {
+            const wvp = weeklyVP[weeklyVP.length - 1];
+            if (!wvp || !wvp.rows.length) return null;
+            const wvpMax = Math.max(1, ...wvp.rows.map(r => r.buy + r.sell));
+            const wvpWidth = Math.max(30, W * 0.05);
+            const wvpX0 = xPxRight - wvpWidth;
+            // Offset left if dailyVP is also visible so they don't overlap
+            const offset = showDailyVP && dailyVP && dailyVP.length ? Math.max(30, W * 0.05) + 2 : 0;
+            return (
+              <g opacity="0.45">
+                {wvp.rows.map((r, i) => {
+                  const y = p2y(r.px);
+                  if (y == null) return null;
+                  const total = r.buy + r.sell;
+                  const w = (total / wvpMax) * wvpWidth;
+                  const col = r.va ? '#c084fc' : '#a855f7';
+                  return (
+                    <rect key={'wvp'+i} x={xPxRight - offset - w} y={y - 1.2} width={w} height={2.4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
+                  );
+                })}
+                {/* VAH line */}
+                {(() => { const y = p2y(wvp.vah); return y != null ? (
+                  <g>
+                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAH</text>
+                  </g>
+                ) : null; })()}
+                {/* VAL line */}
+                {(() => { const y = p2y(wvp.val); return y != null ? (
+                  <g>
+                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAL</text>
+                  </g>
+                ) : null; })()}
+                {/* POC line */}
+                {(() => { const y = p2y(wvp.poc); return y != null ? (
+                  <g>
+                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#a855f7" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.4" />
+                    <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#a855f7" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wPOC</text>
+                  </g>
+                ) : null; })()}
+              </g>
+            );
+          })()}
 
           {/* ── Indicator Overlays ── */}
           {showIndOverlays && chartRef.current && (() => {
@@ -576,7 +842,7 @@ function ChartLW(props) {
           })()}
 
           {/* Markers */}
-          {isFP && showMarkers && chartRef.current && candles.map((c) => {
+          {showMarkers && chartRef.current && candles.map((c) => {
             const xc = t2x(c.time);
             if (xc == null) return null;
             const cw = cellWBase;
@@ -732,15 +998,93 @@ function ChartLW(props) {
           )}
         </div>
 
-        {isFP && showMarkers && fps && (
-          <div className="fp-legend">
-            <span className="chip imb"><span className="sw" /> Imbalance ≥{fps.thr.toFixed(1)}×</span>
-            <span className="chip imbs"><span className="sw" /> Stacked 3+</span>
-            <span className="chip abs"><span className="sw" /> Absorption</span>
-            <span className="chip unf"><span className="sw" /> Unfinished</span>
-          </div>
-        )}
       </div>
+
+      {/* VP strip below chart */}
+      {showVP && (() => {
+        const VP_H = 48;
+        const stripW = xPxRight;
+
+        // Session VP — horizontal histogram by price
+        const sessionContent = vp.rows.length > 0 && (() => {
+          const prices = vp.rows.map(r => r.px);
+          const pxMin = Math.min(...prices);
+          const pxMax = Math.max(...prices);
+          const pxRange = pxMax - pxMin || 1;
+          const barW = Math.max(1, (stripW / vp.rows.length) * 0.85);
+          const px2x = (px) => ((px - pxMin) / pxRange) * (stripW - barW);
+          return (
+            <>
+              {vp.rows.map((r, i) => {
+                const total = r.buy + r.sell;
+                const x = px2x(r.px);
+                const h = (total / vpMax) * (VP_H - 4);
+                const buyH = total > 0 ? (r.buy / total) * h : 0;
+                const sellH = h - buyH;
+                const op = r.poc ? 0.85 : 0.5;
+                return (
+                  <g key={'vps'+i}>
+                    <rect x={x} y={VP_H - h} width={barW} height={sellH} fill={C.sell} opacity={op} />
+                    <rect x={x} y={VP_H - buyH} width={barW} height={buyH} fill={C.buy} opacity={op} />
+                    {r.poc && <line x1={x} x2={x+barW} y1={VP_H - h - 1} y2={VP_H - h - 1} stroke={C.fg1} strokeWidth="1.5" />}
+                  </g>
+                );
+              })}
+              <text x={4} y={VP_H - 4} fontSize="7.5" fill={C.fg} fontFamily="JetBrains Mono" opacity="0.35">{Math.min(...vp.rows.map(r=>r.px)).toFixed(2)}</text>
+              <text x={stripW - 4} y={VP_H - 4} fontSize="7.5" fill={C.fg} fontFamily="JetBrains Mono" opacity="0.35" textAnchor="end">{Math.max(...vp.rows.map(r=>r.px)).toFixed(2)}</text>
+            </>
+          );
+        })();
+
+        // Orderflow VP — per-bar volume columns aligned with chart time axis
+        const ofContent = candles.length > 0 && chartRef.current && (() => {
+          const volMax = Math.max(1, ...candles.map(c => c.vol));
+          return candles.map((c, i) => {
+            const xc = t2x(c.time);
+            if (xc == null) return null;
+            const bw = Math.max(2, barSpacing * 0.7);
+            const h = (c.vol / volMax) * (VP_H - 4);
+            const buyPct = c.vol > 0 ? c.ask / (c.ask + c.bid || 1) : 0.5;
+            const buyH = h * buyPct;
+            const sellH = h - buyH;
+            return (
+              <g key={'ofv'+i}>
+                <rect x={xc - bw/2} y={VP_H - h} width={bw} height={sellH} fill={C.sell} opacity="0.55" />
+                <rect x={xc - bw/2} y={VP_H - buyH} width={bw} height={buyH} fill={C.buy} opacity="0.55" />
+              </g>
+            );
+          });
+        })();
+
+        return (
+          <div className="vp-strip" style={{ height: VP_H, flexShrink:0, position:'relative', borderTop:'1px solid '+C.line, background: C.bg }}>
+            <div className="vp-strip-tabs" style={{
+              position:'absolute', top:2, left:4, display:'flex', gap:1, zIndex:2,
+              background: C.panel, borderRadius:3, padding:1,
+              fontFamily:'JetBrains Mono', fontSize:'8px', textTransform:'uppercase', letterSpacing:'0.05em',
+            }}>
+              <button
+                onClick={()=>setVpStripMode('session')}
+                style={{ all:'unset', cursor:'pointer', padding:'2px 5px', borderRadius:2,
+                  background: vpStripMode==='session' ? C.line : 'transparent',
+                  color: vpStripMode==='session' ? C.fg1 : C.fg+'80',
+                }}
+              >Session</button>
+              <button
+                onClick={()=>setVpStripMode('orderflow')}
+                style={{ all:'unset', cursor:'pointer', padding:'2px 5px', borderRadius:2,
+                  background: vpStripMode==='orderflow' ? C.line : 'transparent',
+                  color: vpStripMode==='orderflow' ? C.fg1 : C.fg+'80',
+                }}
+              >Orderflow</button>
+            </div>
+            <svg width={W} height={VP_H} style={{ display:'block' }}>
+              {vpStripMode === 'session' ? sessionContent : ofContent}
+            </svg>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }

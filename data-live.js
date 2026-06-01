@@ -45,6 +45,8 @@
     domExec: {},
     domSessionDelta: {},
     vp:  { rows: [], poc: 0, vah: 0, val: 0, total: 0 },
+    dailyVP: [],
+    weeklyVP: [],
     tpo: { rows: [], periods: [], poc: 0, vah: 0, val: 0, ibHi: 0, ibLo: 0 },
     delta: [],
     tape: [],
@@ -353,6 +355,7 @@
 
   // ── Analytics (adapted from data.js) ──────────────────────────────────────
 
+  let _smoothedThr = 0;
   function analyzeFootprint(candles) {
     if (!candles.length) return;
     const ratios = [];
@@ -363,7 +366,10 @@
     }));
     const mean  = ratios.length ? ratios.reduce((s, x) => s + x, 0) / ratios.length : 2;
     const sigma = ratios.length ? Math.sqrt(ratios.reduce((s, x) => s + (x - mean) ** 2, 0) / ratios.length) : 0.8;
-    const thr   = mean + 1.2 * sigma;
+    const rawThr = mean + 1.2 * sigma;
+    // EMA-smooth the threshold so imbalance flags don't flicker on every tick
+    _smoothedThr = _smoothedThr === 0 ? rawThr : _smoothedThr * 0.85 + rawThr * 0.15;
+    const thr = _smoothedThr;
 
     const allAbsDelta  = candles.map(c => Math.abs(c.delta));
     const maxAbsDelta  = Math.max(...allAbsDelta, 1);
@@ -481,6 +487,41 @@
       r.sellPct = r.sell / max;
     });
     return { rows: arr, vah: arr[lo].px, val: arr[hi].px, poc: arr[pocIdx].px, total };
+  }
+
+  function buildDailyVP(allBars) {
+    // Group bars by calendar date (CT / America/Chicago)
+    const dayBuckets = new Map();
+    allBars.forEach(bar => {
+      const d = new Date(bar.time * 1000);
+      const key = d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); // YYYY-MM-DD
+      if (!dayBuckets.has(key)) dayBuckets.set(key, []);
+      dayBuckets.get(key).push(bar);
+    });
+    const days = [];
+    for (const [date, dayBars] of dayBuckets) {
+      days.push({ date, ...buildVP(dayBars) });
+    }
+    return days;
+  }
+
+  function buildWeeklyVP(allBars) {
+    const weekBuckets = new Map();
+    allBars.forEach(bar => {
+      const d = new Date(bar.time * 1000);
+      const ct = new Date(d.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+      const day = ct.getDay(); // 0=Sun
+      const diff = ct.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+      const mon = new Date(ct); mon.setDate(diff); mon.setHours(0,0,0,0);
+      const key = mon.toISOString().slice(0,10);
+      if (!weekBuckets.has(key)) weekBuckets.set(key, []);
+      weekBuckets.get(key).push(bar);
+    });
+    const weeks = [];
+    for (const [weekStart, weekBars] of weekBuckets) {
+      weeks.push({ weekStart, ...buildVP(weekBars) });
+    }
+    return weeks;
   }
 
   function buildTPO(allBars) {
@@ -605,6 +646,8 @@
       domExec,
       domSessionDelta,
       vp:        buildVP(allBars),
+      dailyVP:   buildDailyVP(allBars),
+      weeklyVP:  buildWeeklyVP(allBars),
       tpo:       buildTPO(allBars),
       delta:     buildDelta(allBars),
       tape:      tapeBuffer,

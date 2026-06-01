@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-mock_server.py v2 — Realistic IronBeam API mock for orderflow-platform.
+mock_server.py v3 — Realistic IronBeam API mock for orderflow-platform.
 
-Fixes over v1:
-  1. Aggressor → trade price  (BUY @ best_ask, SELL @ best_bid)
-  2. Stateful LOB with queue depletion → real price discovery
-  3. Price ticks only when best-level queue empties
-  4. GARCH(1,1)-like volatility clustering
-  5. Realistic ES size distribution (1-2 lot heavy, blocks are rare)
-  6. Regime state machine with 8-minute cycle
-  7. Burst trade-arrival model (Poisson bursts)
-  8. Spoofing / flash-order simulation
+Key improvements over v2:
+  1. Ornstein-Uhlenbeck process for directional bias → organic, non-monotonic trends
+  2. Short-term momentum with mean-reversion → price moves in waves, not random walks
+  3. GARCH vol feeds back into book thickness and trade sizing
+  4. Replenish sizes vary ±50% each tick, scaled by vol → no fixed walls
+  5. LOB crossed-book protection and proper spread management
+  6. Gradual regime transitions (parameter blending over ~8s)
+  7. Toned-down regime asymmetry → no more ping-pong between 2 fixed points
 
 Requirements:
     pip install aiohttp
@@ -38,36 +37,31 @@ BAR_SEC      = 30
 SYMBOL       = 'XCME:ESH6'
 INIT_PX      = 5842.25
 DEPTH_LEVELS = 10
-HISTORY_BARS = 240   # ~120 min of 30 s bars — enough to warm up all indicators
+HISTORY_BARS = 240   # ~120 min of 30 s bars
 
 # ── Regime definitions ─────────────────────────────────────────────────────────
-# (name, duration_s, buy_prob, ask_replenish, bid_replenish, vol_scalar, base_trade_hz_s)
-#   ask_replenish / bid_replenish = base queue size restocked when a level clears
-#   vol_scalar    = DIVISOR on replenish sizes (higher = thinner book / more volatile)
+# (name, duration_s, buy_bias, ask_rep_base, bid_rep_base, vol_scalar, base_trade_hz_s)
 #
-# Replenish sizing: LOB level-1 ≈ rep * exp(-0.18) ≈ rep * 0.84
-# ES L1 depth in reality: ~300-1200 contracts; we target ~130-850 here.
+# buy_bias is the CENTER of the OU process, not a hard probability.
+# Actual buy_prob fluctuates ±0.12 around this with momentum.
+# Replenish bases are MEDIAN values — actual sizes vary ±50% each tick.
 BASE_REGIMES = [
-    ('open_gap',       60,  0.60, 400,  350, 1.0, 0.09),
-    ('hard_trend',     90,  0.72, 150,  900, 1.0, 0.10),
-    ('absorption',     75,  0.78,3000,  400, 1.0, 0.12),  # thick ask iceberg wall
-    ('lunchtime_chop',120,  0.50,1800, 1800, 1.0, 0.60),
-    ('failed_auction', 60,  0.28, 850,  130, 1.0, 0.09),
-    ('close_accel',    90,  0.68, 200,  750, 1.0, 0.07),
+    ('open_gap',       60,  0.57, 500,  450, 1.0, 0.09),
+    ('hard_trend',     90,  0.64, 250,  700, 1.0, 0.10),
+    ('absorption',     75,  0.70,2400,  500, 1.0, 0.12),
+    ('lunchtime_chop',120,  0.50,1600, 1600, 1.0, 0.60),
+    ('failed_auction', 60,  0.36, 700,  250, 1.0, 0.09),
+    ('close_accel',    90,  0.62, 300,  650, 1.0, 0.07),
 ]
 
-# News: direction chosen randomly at injection time (see get_regime / generate_history).
-# Short duration (6 s) with a thin book so price gaps cleanly in a handful of sweeps,
-# then settles in post-news silence.  vol_scalar=6 → ~8 lots/level so one 50-lot sweep
-# clears ~6 ticks (1.5 pts).  Two sweeps ≈ 3 pts — realistic for a mid-tier release.
-NEWS_REGIME_UP   = ('news_release',    6,  0.92,  50,  50, 6.0, 0.20)
-NEWS_REGIME_DOWN = ('news_release',    6,  0.08,  50,  50, 6.0, 0.20)
+NEWS_REGIME_UP   = ('news_release',    6,  0.88,  50,  50, 6.0, 0.20)
+NEWS_REGIME_DOWN = ('news_release',    6,  0.12,  50,  50, 6.0, 0.20)
 POST_NEWS_REGIME = ('post_news_chop', 45,  0.50, 600, 600, 1.0, 0.80)
 
-# News fires randomly: ~15% chance when transitioning between base regimes
 NEWS_PROB = 0.15
 
-REGIMES = BASE_REGIMES  # runtime list; news inserted dynamically
+# ── Regime transition blending ─────────────────────────────────────────────────
+BLEND_DURATION = 8.0  # seconds to blend from old regime params to new
 
 
 # ── CORS helpers ───────────────────────────────────────────────────────────────
@@ -89,13 +83,15 @@ def snap(p: float) -> float:
 # ── Limit Order Book ──────────────────────────────────────────────────────────
 class LOB:
     """
-    Stateful limit order book.  Sizes persist between ticks — only updated
-    incrementally rather than regenerated from scratch each DOM refresh.
+    Stateful limit order book with crossed-book protection.
     """
 
     def __init__(self, mid: float):
-        self.bids: dict[float, int] = {}   # price → resting size
+        self.bids: dict[float, int] = {}
         self.asks: dict[float, int] = {}
+        # Current regime targets — updated by replenish(), used by _fill_side()
+        self.bid_target: int = 400
+        self.ask_target: int = 400
         self._seed(mid)
 
     def _seed(self, mid: float):
@@ -106,14 +102,34 @@ class LOB:
             self.bids[bp] = base + random.randint(0, base)
             self.asks[ap] = base + random.randint(0, base)
 
-    # ── Accessors ──────────────────────────────────────────────────────────────
     def best_bid(self) -> float:
         return max(self.bids) if self.bids else 0.0
 
     def best_ask(self) -> float:
         return min(self.asks) if self.asks else 0.0
 
-    # ── Queue consumption ──────────────────────────────────────────────────────
+    def mid(self) -> float:
+        bb, ba = self.best_bid(), self.best_ask()
+        if bb and ba:
+            return (bb + ba) / 2
+        return bb or ba or INIT_PX
+
+    def _uncross(self):
+        """Remove any crossed levels (bids >= best_ask or asks <= best_bid)."""
+        ba = self.best_ask()
+        bb = self.best_bid()
+        if not ba or not bb:
+            return
+        if bb >= ba:
+            # Remove offending bids
+            to_del = [p for p in self.bids if p >= ba]
+            for p in to_del:
+                del self.bids[p]
+            # Remove offending asks
+            to_del = [p for p in self.asks if p <= bb]
+            for p in to_del:
+                del self.asks[p]
+
     def consume_ask(self, size: int, replenish: int) -> tuple[float, bool]:
         """Market buy hits best ask.  Returns (trade_px, level_cleared)."""
         px = self.best_ask()
@@ -122,11 +138,14 @@ class LOB:
         self.asks[px] = max(0, self.asks[px] - size)
         if self.asks[px] <= 0:
             del self.asks[px]
-            # Price ticks up: open a new ask level one tick higher
             new_px = snap(px + TICK)
-            jitter = max(1, replenish // 4)
-            self.asks[new_px] = max(1, replenish + random.randint(-jitter, jitter))
-            self._fill()
+            # Only add if it doesn't cross
+            bb = self.best_bid()
+            if not bb or new_px > bb:
+                jitter = max(1, replenish // 3)
+                self.asks[new_px] = max(1, replenish + random.randint(-jitter, jitter))
+            self._fill_side('ask')
+            self._uncross()
             return px, True
         return px, False
 
@@ -139,61 +158,101 @@ class LOB:
         if self.bids[px] <= 0:
             del self.bids[px]
             new_px = snap(px - TICK)
-            jitter = max(1, replenish // 4)
-            self.bids[new_px] = max(1, replenish + random.randint(-jitter, jitter))
-            self._fill()
+            ba = self.best_ask()
+            if not ba or new_px < ba:
+                jitter = max(1, replenish // 3)
+                self.bids[new_px] = max(1, replenish + random.randint(-jitter, jitter))
+            self._fill_side('bid')
+            self._uncross()
             return px, True
         return px, False
 
-    # ── Level maintenance ──────────────────────────────────────────────────────
-    def _fill(self):
-        """Ensure we always have DEPTH_LEVELS on each side and a 1-tick spread."""
+    def _fill_side(self, side: str):
+        """Ensure DEPTH_LEVELS on the given side using regime-aware sizes."""
         bb = self.best_bid()
         ba = self.best_ask()
-        for i in range(1, DEPTH_LEVELS + 2):
-            if bb:
+        if side == 'bid' and bb:
+            for i in range(1, DEPTH_LEVELS + 2):
                 px = snap(bb - i * TICK)
+                if ba and px >= ba:
+                    continue
                 if px not in self.bids:
-                    base = max(1, int(160 * math.exp(-i * 0.20)))
-                    self.bids[px] = base + random.randint(0, base // 2)
-            if ba:
+                    base = max(1, int(self.bid_target * math.exp(-i * 0.18)))
+                    self.bids[px] = base + random.randint(0, max(1, base // 3))
+        if side == 'ask' and ba:
+            for i in range(1, DEPTH_LEVELS + 2):
                 px = snap(ba + i * TICK)
+                if bb and px <= bb:
+                    continue
                 if px not in self.asks:
-                    base = max(1, int(160 * math.exp(-i * 0.20)))
-                    self.asks[px] = base + random.randint(0, base // 2)
+                    base = max(1, int(self.ask_target * math.exp(-i * 0.18)))
+                    self.asks[px] = base + random.randint(0, max(1, base // 3))
+
+    def _fill(self):
+        self._fill_side('bid')
+        self._fill_side('ask')
 
     def replenish(self, ask_rep: int, bid_rep: int):
         """
-        Gentle mean-reversion of resting sizes toward regime targets.
-        Called once per DOM refresh — NOT a full regeneration.
+        Mean-reversion of resting sizes toward noisy regime targets.
+        Blend rate is faster for levels near L1 so trailing levels
+        catch up quickly after a directional move.
         """
+        # Store targets so _fill_side uses regime-appropriate sizes
+        self.bid_target = bid_rep
+        self.ask_target = ask_rep
+
         bb = self.best_bid()
         ba = self.best_ask()
-        # If bids have fallen too far behind price, reseed them near current ask
-        if bb and ba and round(ba - bb, 4) > TICK * 3:
-            stale = [p for p in list(self.bids) if p < snap(ba - (DEPTH_LEVELS + 2) * TICK)]
-            for p in stale:
-                del self.bids[p]
-            for i in range(1, DEPTH_LEVELS + 2):
-                bp = snap(ba - i * TICK)
-                if bp not in self.bids:
-                    base = max(1, int(bid_rep * math.exp(-i * 0.18)))
-                    self.bids[bp] = base + random.randint(0, base // 2)
-            bb = self.best_bid()
-        for i in range(1, DEPTH_LEVELS + 1):
-            decay = math.exp(-i * 0.18)
-            tb = max(1, int(bid_rep * decay))
-            ta = max(1, int(ask_rep * decay))
-            bp = snap(bb - i * TICK) if bb else 0.0
-            ap = snap(ba + i * TICK) if ba else 0.0
-            if bp:
-                cur = self.bids.get(bp, tb)
-                self.bids[bp] = max(1, int(cur * 0.88 + tb * 0.12 + random.randint(0, tb // 5)))
-            if ap:
-                cur = self.asks.get(ap, ta)
-                self.asks[ap] = max(1, int(cur * 0.88 + ta * 0.12 + random.randint(0, ta // 5)))
 
-        # Prune stale outer levels
+        # Fix blown spread: if > 2 ticks, gently fill inward
+        if bb and ba and round(ba - bb, 4) > TICK * 2:
+            gap_ticks = int(round((ba - bb) / TICK))
+            if gap_ticks > 2:
+                fill_px = snap(ba - TICK)
+                if fill_px not in self.bids:
+                    self.bids[fill_px] = max(1, bid_rep // 2 + random.randint(0, bid_rep // 4))
+                bb = self.best_bid()
+
+        # Prune stale outer levels that drifted too far
+        if bb and ba:
+            stale_bid = [p for p in self.bids if p < snap(bb - (DEPTH_LEVELS + 3) * TICK)]
+            for p in stale_bid:
+                del self.bids[p]
+            stale_ask = [p for p in self.asks if p > snap(ba + (DEPTH_LEVELS + 3) * TICK)]
+            for p in stale_ask:
+                del self.asks[p]
+
+        # Mean-revert levels toward noisy targets
+        # Faster blend for L1-L3 (0.35) so trailing side thickens quickly
+        # Slower blend for deeper levels (0.12) — stable backdrop
+        for i in range(0, DEPTH_LEVELS + 1):
+            decay = math.exp(-max(0, i - 0.5) * 0.18)
+            noise_b = 1.0 + random.uniform(-0.35, 0.35)
+            noise_a = 1.0 + random.uniform(-0.35, 0.35)
+            tb = max(1, int(bid_rep * decay * noise_b))
+            ta = max(1, int(ask_rep * decay * noise_a))
+
+            # Faster blend near the top of book
+            blend = 0.35 if i <= 3 else 0.12
+            keep = 1.0 - blend
+
+            if bb:
+                bp = snap(bb - i * TICK)
+                if ba and bp >= ba:
+                    continue
+                cur = self.bids.get(bp, tb)
+                self.bids[bp] = max(1, int(cur * keep + tb * blend))
+            if ba:
+                ap = snap(ba + i * TICK)
+                if bb and ap <= bb:
+                    continue
+                cur = self.asks.get(ap, ta)
+                self.asks[ap] = max(1, int(cur * keep + ta * blend))
+
+        self._uncross()
+
+        # Prune to max levels
         for px in sorted(self.bids, reverse=True)[DEPTH_LEVELS * 2:]:
             del self.bids[px]
         for px in sorted(self.asks)[DEPTH_LEVELS * 2:]:
@@ -218,45 +277,99 @@ class Market:
 
         # GARCH(1,1) volatility state
         self.recent_returns: deque = deque(maxlen=40)
-        self.vol: float = 0.30   # in ticks
+        self.vol: float = 0.30  # in ticks
+
+        # Ornstein-Uhlenbeck directional bias
+        # This is the ACTUAL buy probability, which mean-reverts to regime center
+        self.ou_bias: float = 0.50
+        self.ou_speed: float = 0.08   # reversion speed per trade
+        self.ou_noise: float = 0.025  # noise per step
+
+        # Short-term momentum: rolling sum of recent price changes in ticks
+        self.recent_moves: deque = deque(maxlen=20)
 
         # Regime controller
         self.regime_idx   = 0
         self.regime_start = time.time()
+        self.prev_regime_params: tuple | None = None  # for blending
 
         # Iceberg level (absorption regime)
         self.iceberg_px: float = snap(INIT_PX + 8 * TICK)
 
-        # Spoofing: {price → (size, expiry_ts)}
+        # Spoofing
         self.flash: dict[float, tuple[int, float]] = {}
         self.last_flash = 0.0
 
 mkt = Market()
 
-# Runtime regime queue — news + post_news get prepended dynamically
 _regime_queue: list[tuple] = []
-
-# Pre-generated historical messages (populated in __main__, read in handle_ws)
 _history: list[dict] = []
+
+
+# ── OU bias update ────────────────────────────────────────────────────────────
+def update_ou_bias(m: 'Market', target: float):
+    """
+    Ornstein-Uhlenbeck step: bias drifts toward regime target but with
+    noise and momentum influence → organic, non-monotonic trends.
+    """
+    # Momentum contribution: if price has been moving up, bias nudges up
+    momentum = 0.0
+    if len(m.recent_moves) >= 5:
+        recent_sum = sum(m.recent_moves)
+        momentum = 0.003 * recent_sum  # small momentum nudge
+
+    # OU mean reversion + noise + momentum
+    reversion = m.ou_speed * (target - m.ou_bias)
+    noise = m.ou_noise * random.gauss(0, 1)
+    m.ou_bias += reversion + noise + momentum
+
+    # Clamp to valid probability range with margin
+    m.ou_bias = max(0.08, min(0.92, m.ou_bias))
+
+
+# ── Blended regime parameters ─────────────────────────────────────────────────
+def blended_params(regime: tuple, m: 'Market') -> tuple:
+    """
+    If we recently transitioned, blend old → new params over BLEND_DURATION.
+    Returns (name, dur, buy_bias, ask_rep, bid_rep, vol_scalar, hz).
+    """
+    if m.prev_regime_params is None:
+        return regime
+
+    elapsed = time.time() - m.regime_start
+    if elapsed >= BLEND_DURATION:
+        m.prev_regime_params = None
+        return regime
+
+    t = elapsed / BLEND_DURATION  # 0..1
+    # Smooth ease-in-out
+    t = t * t * (3 - 2 * t)
+
+    old = m.prev_regime_params
+    new = regime
+    blended = (
+        new[0],  # name from new regime
+        new[1],  # duration from new regime
+        old[2] + (new[2] - old[2]) * t,  # buy_bias
+        int(old[3] + (new[3] - old[3]) * t),  # ask_rep
+        int(old[4] + (new[4] - old[4]) * t),  # bid_rep
+        old[5] + (new[5] - old[5]) * t,  # vol_scalar
+        old[6] + (new[6] - old[6]) * t,  # hz
+    )
+    return blended
 
 
 # ── Historical bar pre-generation ─────────────────────────────────────────────
 def generate_history() -> list[dict]:
     """
-    Simulate HISTORY_BARS bars synchronously so indicators have warm-up data
-    the moment a client connects.  Uses a separate Market instance so the live
-    mkt state is unaffected.  Returns a flat list of WS message dicts:
-        [{tr: [...]}, {ti: [...]}, {tr: [...]}, {ti: [...]}, ...]
+    Simulate HISTORY_BARS bars synchronously for chart warm-up.
     """
     h = Market()
-    # Give the history LOB a fresh seed so it's independent of live mkt
     h.lob = LOB(INIT_PX)
 
-    now    = time.time()
-    # Last historical bar closes 1 bar before "now" so the live bar is a fresh slot
+    now     = time.time()
     start_t = int((now - HISTORY_BARS * BAR_SEC) // BAR_SEC) * BAR_SEC
 
-    # Local regime state (mirrors get_regime() but synchronous)
     reg_idx   = 0
     reg_start = start_t
     reg_queue: list[tuple] = [BASE_REGIMES[0]]
@@ -289,7 +402,7 @@ def generate_history() -> list[dict]:
     for bar_i in range(HISTORY_BARS):
         bar_t  = start_t + bar_i * BAR_SEC
         reg    = cur_regime(bar_t)
-        name, _, buy_prob, ask_rep, bid_rep, vol_scalar, _ = reg
+        name, _, buy_bias, ask_rep, bid_rep, vol_scalar, _ = reg
 
         bar = {'t': bar_t, 'o': h.price, 'h': h.price,
                'l': h.price, 'c': h.price, 'v': 0}
@@ -298,20 +411,27 @@ def generate_history() -> list[dict]:
         n_ticks = random.randint(40, 85)
 
         for i in range(n_ticks):
-            is_buy = random.random() < buy_prob
-            sz     = trade_size()
+            # OU bias update for history
+            update_ou_bias(h, buy_bias)
+            is_buy = random.random() < h.ou_bias
+
+            sz = trade_size()
+
+            a_rep = max(1, int(ask_rep / vol_scalar *
+                               (1.0 + random.uniform(-0.4, 0.4))))
+            b_rep = max(1, int(bid_rep / vol_scalar *
+                               (1.0 + random.uniform(-0.4, 0.4))))
 
             if is_buy:
-                px, _ = h.lob.consume_ask(sz, max(1, int(ask_rep / vol_scalar)))
+                px, _ = h.lob.consume_ask(sz, a_rep)
                 side  = 'BUY'
             else:
-                px, _ = h.lob.consume_bid(sz, max(1, int(bid_rep / vol_scalar)))
+                px, _ = h.lob.consume_bid(sz, b_rep)
                 side  = 'SELL'
 
             if not px:
                 continue
 
-            # Absorption iceberg re-flood
             if name == 'absorption' and is_buy and snap(px) == h.iceberg_px:
                 h.lob.asks[h.iceberg_px] = max(h.lob.asks.get(h.iceberg_px, 0), 800)
 
@@ -322,30 +442,34 @@ def generate_history() -> list[dict]:
             h.volume += sz
             h.delta  += sz if side == 'BUY' else -sz
 
+            # Track momentum
+            if prev:
+                move = (px - prev) / TICK
+                h.recent_moves.append(move)
+
             bar['h']  = max(bar['h'], px)
             bar['l']  = min(bar['l'], px)
             bar['c']  = px
             bar['v'] += sz
 
-            # Inline GARCH update
+            # GARCH update
             if prev:
                 ret = (px - prev) / TICK
                 h.recent_returns.append(ret)
                 if len(h.recent_returns) >= 4:
-                    ω, α, β = 0.025, 0.14, 0.83
-                    ε = h.recent_returns[-2]
-                    h.vol = math.sqrt(max(1e-6, ω + α * ε**2 + β * h.vol**2))
+                    w, a, b = 0.025, 0.14, 0.83
+                    e2 = h.recent_returns[-2]
+                    h.vol = math.sqrt(max(1e-6, w + a * e2**2 + b * h.vol**2))
                     h.vol = max(0.05, min(5.0, h.vol))
 
-            # Spread trade timestamps evenly across the bar
             trade_ms = int((bar_t + (i / max(n_ticks, 1)) * BAR_SEC) * 1000)
             bar_trades.append({'p': px, 'sz': sz, 'td': side, 'st': trade_ms, 'is': False})
 
-        # Replenish LOB at bar boundary
-        h.lob.replenish(max(1, int(ask_rep / vol_scalar)), max(1, int(bid_rep / vol_scalar)))
+        h.lob.replenish(
+            max(1, int(ask_rep / vol_scalar)),
+            max(1, int(bid_rep / vol_scalar))
+        )
 
-        # ti FIRST so the client creates currentBar, then tr so trades
-        # accumulate into the correct bar's footprint.
         messages.append({'ti': [dict(bar)]})
         if bar_trades:
             messages.append({'tr': bar_trades})
@@ -359,18 +483,18 @@ def generate_history() -> list[dict]:
 def get_regime() -> tuple:
     global _regime_queue
 
-    # Check if current regime has expired
     current = _regime_queue[0] if _regime_queue else BASE_REGIMES[mkt.regime_idx]
     _, dur, *_ = current
     if time.time() - mkt.regime_start >= dur:
+        # Save old params for blending
+        mkt.prev_regime_params = current
+
         if _regime_queue:
             _regime_queue.pop(0)
 
-        # Advance base index when queue is empty
         if not _regime_queue:
             mkt.regime_idx = (mkt.regime_idx + 1) % len(BASE_REGIMES)
             next_regime = BASE_REGIMES[mkt.regime_idx]
-            # Randomly inject news before next base regime (direction chosen here)
             if random.random() < NEWS_PROB:
                 news = NEWS_REGIME_UP if random.random() > 0.5 else NEWS_REGIME_DOWN
                 _regime_queue.extend([news, POST_NEWS_REGIME])
@@ -381,7 +505,6 @@ def get_regime() -> tuple:
         name = current[0]
         if name == 'absorption':
             mkt.iceberg_px = snap(mkt.price + 8 * TICK)
-        # Drain the LOB when news hits so spread blows out
         if name == 'news_release':
             for px in list(mkt.lob.asks):
                 mkt.lob.asks[px] = max(1, mkt.lob.asks[px] // 8)
@@ -410,30 +533,41 @@ def update_vol(ret_ticks: float):
     mkt.recent_returns.append(ret_ticks)
     if len(mkt.recent_returns) < 4:
         return
-    ω, α, β = 0.025, 0.14, 0.83
-    ε = mkt.recent_returns[-2]
-    mkt.vol = math.sqrt(max(1e-6, ω + α * ε ** 2 + β * mkt.vol ** 2))
+    w, a, b = 0.025, 0.14, 0.83
+    e2 = mkt.recent_returns[-2]
+    mkt.vol = math.sqrt(max(1e-6, w + a * e2 ** 2 + b * mkt.vol ** 2))
     mkt.vol = max(0.05, min(5.0, mkt.vol))
 
 
 # ── Trade generation ──────────────────────────────────────────────────────────
 def gen_trade(regime: tuple) -> dict | None:
-    name, _, buy_prob, ask_rep, bid_rep, vol_scalar, _ = regime
+    # Get blended params for smooth transitions
+    params = blended_params(regime, mkt)
+    name, _, buy_bias, ask_rep, bid_rep, vol_scalar, _ = params
 
-    sz    = trade_size()
-    is_buy = random.random() < buy_prob
+    # Update OU bias toward regime's center
+    update_ou_bias(mkt, buy_bias)
+
+    sz     = trade_size()
+    is_buy = random.random() < mkt.ou_bias
+
+    # Replenish with regime params + noise (no vol feedback — regimes handle thickness)
+    a_rep = max(1, int(ask_rep / max(0.1, vol_scalar) *
+                       (1.0 + random.uniform(-0.4, 0.4))))
+    b_rep = max(1, int(bid_rep / max(0.1, vol_scalar) *
+                       (1.0 + random.uniform(-0.4, 0.4))))
 
     if is_buy:
-        px, ticked = mkt.lob.consume_ask(sz, max(1, int(ask_rep / vol_scalar)))
+        px, ticked = mkt.lob.consume_ask(sz, a_rep)
         side = 'BUY'
     else:
-        px, ticked = mkt.lob.consume_bid(sz, max(1, int(bid_rep / vol_scalar)))
+        px, ticked = mkt.lob.consume_bid(sz, b_rep)
         side = 'SELL'
 
     if not px:
         return None
 
-    # Absorption iceberg: re-flood only the exact iceberg level so price can't escape
+    # Absorption iceberg
     if name == 'absorption' and is_buy and snap(px) == mkt.iceberg_px:
         mkt.lob.asks[mkt.iceberg_px] = max(
             mkt.lob.asks.get(mkt.iceberg_px, 0), 800
@@ -446,6 +580,11 @@ def gen_trade(regime: tuple) -> dict | None:
     mkt.low   = min(mkt.low,  px)
     mkt.volume += sz
     mkt.delta  += sz if side == 'BUY' else -sz
+
+    # Track momentum
+    if prev:
+        move = (px - prev) / TICK
+        mkt.recent_moves.append(move)
 
     # GARCH
     if prev:
@@ -462,10 +601,13 @@ def gen_trade(regime: tuple) -> dict | None:
 
 # ── DOM generation ────────────────────────────────────────────────────────────
 def gen_depth(regime: tuple) -> dict:
-    name, _, _, ask_rep, bid_rep, vol_scalar, _ = regime
+    params = blended_params(regime, mkt)
+    name, _, _, ask_rep, bid_rep, vol_scalar, _ = params
 
-    # vol_scalar divides replenish: high scalar = thin book (news drains liquidity)
-    mkt.lob.replenish(max(1, int(ask_rep / vol_scalar)), max(1, int(bid_rep / vol_scalar)))
+    mkt.lob.replenish(
+        max(1, int(ask_rep / max(0.1, vol_scalar))),
+        max(1, int(bid_rep / max(0.1, vol_scalar)))
+    )
 
     # Expire old flash orders
     now = time.time()
@@ -550,28 +692,26 @@ async def handle_ws(req):
     bar = {'t': bar_ts, 'o': mkt.price, 'h': mkt.price,
            'l': mkt.price, 'c': mkt.price, 'v': 0}
 
-    # DOM + quote snapshots so panels aren't blank during history replay
+    # Initial snapshots
     await ws.send_str(json.dumps(gen_depth(regime)))
     await ws.send_str(json.dumps(gen_quote()))
 
-    # Burst historical bars (ti → tr per bar, chronological).
-    # The live current-bar ti comes AFTER so handleTimeBars sees timestamps
-    # in ascending order and promotes each historical bar correctly.
+    # Burst historical bars
     for hist_msg in _history:
         await ws.send_str(json.dumps(hist_msg))
 
-    # Now open the live current bar
+    # Open live current bar
     await ws.send_str(json.dumps({'ti': [dict(bar)]}))
 
     tick = 0
     try:
         while not ws.closed:
             regime = get_regime()
-            name, _, _, _, _, vol_scalar, base_hz = regime
+            params = blended_params(regime, mkt)
+            name = params[0]
+            base_hz = params[6]
 
-            # ── Trade count per tick ──────────────────────────────────────────
-            # News: 1-2 large sweeps at a measured pace — price gaps, it's not a spam.
-            # Normal burst: occasional multi-trade flurry (algo hit).
+            # Trade count per tick
             is_news  = (name == 'news_release')
             is_burst = (not is_news) and (random.random() < 0.07)
             n_trades = (random.randint(1, 2) if is_news
@@ -594,26 +734,26 @@ async def handle_ws(req):
             tick += 1
             maybe_spoof(regime)
 
-            # ── Bar close ─────────────────────────────────────────────────────
+            # Bar close
             now_ts = int(time.time() // BAR_SEC) * BAR_SEC
             if now_ts > bar['t']:
                 await ws.send_str(json.dumps({'ti': [dict(bar)]}))
                 bar = {'t': now_ts, 'o': mkt.price, 'h': mkt.price,
                        'l': mkt.price, 'c': mkt.price, 'v': 0}
-                print(f'[mock] bar close @ {now_ts} | {name}')
+                print(f'[mock] bar close @ {now_ts} | {name} | bias={mkt.ou_bias:.2f} vol={mkt.vol:.2f}')
 
-            # ── In-progress bar update every 3 ticks ──────────────────────────
+            # In-progress bar update every 3 ticks
             if tick % 3 == 0:
                 await ws.send_str(json.dumps({'ti': [dict(bar)]}))
 
-            # ── DOM: stateful, refreshed every tick ───────────────────────────
+            # DOM refresh
             await ws.send_str(json.dumps(gen_depth(regime)))
 
-            # ── Quote every ~10 ticks ─────────────────────────────────────────
+            # Quote every ~10 ticks
             if tick % 10 == 0:
                 await ws.send_str(json.dumps(gen_quote()))
 
-            # ── Sleep: burst mode uses very short delay, normal uses regime hz ─
+            # Sleep
             if is_burst:
                 await asyncio.sleep(0.015 + random.random() * 0.025)
             else:
@@ -644,7 +784,7 @@ if __name__ == '__main__':
     cycle = sum(r[1] for r in BASE_REGIMES)
     names = ' -> '.join(r[0] for r in BASE_REGIMES) + ' (news ~15% random)'
     print('-' * 60)
-    print(f'  Mock IronBeam v2   http://localhost:{PORT}')
+    print(f'  Mock IronBeam v3   http://localhost:{PORT}')
     print(f'  Bar: {BAR_SEC}s | Cycle: {cycle}s | Symbol: {SYMBOL}')
     print(f'  {names}')
     print(f'  Set MOCK = true in data-live.js')

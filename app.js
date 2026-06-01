@@ -43,6 +43,8 @@ function App() {
   const [showDelta, setShowDelta] = useState(true);
   const [showImb, setShowImb] = useState(true);
   const [showVP, setShowVP] = useState(true);
+  const [showDailyVP, setShowDailyVP] = useState(true);
+  const [showWeeklyVP, setShowWeeklyVP] = useState(false);
   const [showVol, setShowVol] = useState(true);
   const [showMarkers, setShowMarkers] = useState(true);
   const [showIndOverlays, setShowIndOverlays] = useState(true);
@@ -176,6 +178,8 @@ function App() {
               showDelta={showDelta} setShowDelta={setShowDelta}
               showImb={showImb} setShowImb={setShowImb}
               showVP={showVP} setShowVP={setShowVP}
+              showDailyVP={showDailyVP} setShowDailyVP={setShowDailyVP}
+              showWeeklyVP={showWeeklyVP} setShowWeeklyVP={setShowWeeklyVP}
               showVol={showVol} setShowVol={setShowVol}
               showMarkers={showMarkers} setShowMarkers={setShowMarkers}
               showIndOverlays={showIndOverlays} setShowIndOverlays={setShowIndOverlays}
