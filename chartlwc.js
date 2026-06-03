@@ -322,6 +322,25 @@ function ChartLW(props) {
   const [tool, setTool] = React.useState('cursor');
   const [drawings, setDrawings] = React.useState([]);
   const [pending, setPending] = React.useState(null);
+  const [gexLevels, setGexLevels] = React.useState([]);
+
+  // Fetch GEX levels file once on mount; silently ignore if not yet generated
+  React.useEffect(() => {
+    const load = () => {
+      fetch('data/gex_levels.json?_=' + new Date().toDateString())
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.levels) setGexLevels(d.levels); })
+        .catch(() => {});
+    };
+    load();
+    // Refresh at midnight so the new day's levels are picked up automatically
+    const msToMidnight = () => {
+      const n = new Date();
+      return new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1) - n;
+    };
+    const tid = setTimeout(() => { load(); }, msToMidnight());
+    return () => clearTimeout(tid);
+  }, []);
 
   // ---- init chart once ----
   React.useEffect(() => {
@@ -941,6 +960,27 @@ function ChartLW(props) {
           })}
 
           {/* Drawings */}
+          {/* ── GEX Levels (loaded from data/gex_levels.json) ── */}
+          {chartRef.current && gexLevels.map((lvl, i) => {
+            const y = p2y(lvl.price);
+            if (y == null) return null;
+            const midX = xPxRight / 2;
+            const label = `${lvl.name}  ${lvl.price.toFixed(2)}`;
+            const lblW = label.length * 6.4 + 10;
+            return (
+              <g key={'gex' + i}>
+                <line x1={0} x2={xPxRight} y1={y} y2={y}
+                  stroke={lvl.color} strokeWidth="1" strokeDasharray="6 4" opacity="0.65" />
+                <rect x={midX - lblW / 2} y={y - 9} width={lblW} height={14}
+                  fill={C.bg} fillOpacity="0.82" rx="2" />
+                <text x={midX} y={y + 3} fontSize="9.5" fontFamily="JetBrains Mono"
+                  fontWeight="600" fill={lvl.color} textAnchor="middle">
+                  {label}
+                </text>
+              </g>
+            );
+          })}
+
           {chartRef.current && [...drawings, ...(pending ? [pending] : [])].map((d) => {
             const x1 = t2x(d.a.t), y1 = p2y(d.a.p);
             const x2 = t2x(d.b.t), y2 = p2y(d.b.p);

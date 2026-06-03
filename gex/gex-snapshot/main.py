@@ -6,6 +6,7 @@ outputs a clean morning snapshot.
 """
 
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -13,7 +14,7 @@ from data.ironbeam import fetch_nq_options
 from data.tradier import fetch_equity_options
 from compute.gex import aggregate_gex
 from levels.extract import extract_instrument_levels, detect_combos
-from output.format import print_snapshot, save_json
+from output.format import print_snapshot, save_json, save_levels_json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,6 +124,12 @@ def run():
 
     print_snapshot(result)
     save_json(result)
+
+    # Write flat levels JSON to project root data/ for the chart frontend
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _project_root = os.path.normpath(os.path.join(_here, '..', '..'))
+    _levels_path = os.path.join(_project_root, 'data', 'gex_levels.json')
+    save_levels_json(result, _levels_path)
 
     log.info(
         "Done. Total contracts with unsolvable IV skipped: %d", total_skipped_iv

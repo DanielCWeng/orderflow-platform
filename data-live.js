@@ -709,6 +709,23 @@
       token = await authenticate(username, password);
       const sid = await createStream(token);
       hideOverlay();
+      // Persist credentials for next page load (skip mock placeholders)
+      if (!MOCK && username && username !== 'mock') {
+        try {
+          localStorage.setItem('ib_user', username);
+          localStorage.setItem('ib_pass', password);
+        } catch (_) {}
+        // Kick the orderflow backend — fire-and-forget, silently ignore if not running
+        fetch('http://localhost:8000/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        }).then(r => r.json()).then(d => {
+          console.log('[OF] orderflow backend connected:', d);
+        }).catch(() => {
+          console.log('[OF] orderflow backend not reachable — skipping');
+        });
+      }
       openWS(token, sid);
     } catch (err) {
       console.error('[OF] connect error:', err);
@@ -719,6 +736,20 @@
   // Mock mode: auto-connect silently, no credentials needed
   if (MOCK) {
     window.connectIronBeam('mock', 'mock');
+  } else {
+    // Non-mock: pre-fill form and auto-connect if credentials were saved previously
+    try {
+      const savedUser = localStorage.getItem('ib_user');
+      const savedPass = localStorage.getItem('ib_pass');
+      if (savedUser && savedPass) {
+        const userEl = document.getElementById('ib-user');
+        const passEl = document.getElementById('ib-pass');
+        if (userEl) userEl.value = savedUser;
+        if (passEl) passEl.value = savedPass;
+        // Auto-connect — delay slightly so the page finishes rendering first
+        setTimeout(() => window.connectIronBeam(savedUser, savedPass), 200);
+      }
+    } catch (_) {}
   }
-  // Otherwise overlay stays hidden — user opens it via the Connect button
+  // Without saved credentials the overlay stays open for manual login
 })();

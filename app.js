@@ -1,5 +1,23 @@
 const { useState, useEffect, useRef, useCallback } = React;
 
+function GexButton() {
+  const [state, setState] = useState('idle'); // idle | loading | ok | err
+  const run = async () => {
+    setState('loading');
+    try {
+      const r = await fetch('http://localhost:8000/gex/run', { method: 'POST' });
+      setState(r.ok ? 'ok' : 'err');
+    } catch { setState('err'); }
+    setTimeout(() => setState('idle'), 3000);
+  };
+  const label = { idle: 'GEX', loading: '…', ok: '✓ GEX', err: '✗ GEX' }[state];
+  return (
+    <button className={'ib-connect-btn gex-btn gex-' + state} onClick={run} disabled={state === 'loading'} title="Run GEX snapshot">
+      {label}
+    </button>
+  );
+}
+
 // ===== drag helper =====
 function startVerticalDrag(e, onMove) {
   e.preventDefault();
@@ -119,6 +137,7 @@ function App() {
         <div className="topbar-right">
           <span className="pill"><span className="live" /> CME · LIVE</span>
           <span className="mono">{time}</span>
+          <GexButton />
           <button
             className="ib-connect-btn"
             title="IronBeam connection"

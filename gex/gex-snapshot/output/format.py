@@ -77,6 +77,60 @@ def print_snapshot(result: dict):
     print()
 
 
+def save_levels_json(result: dict, output_path: str):
+    """
+    Write a flat levels array to a fixed-path JSON file for the chart frontend.
+    This file is replaced daily and read by chartlwc.js to render GEX lines.
+    """
+    COLORS = {
+        "call_wall":          "#3fb950",
+        "put_wall":           "#f85149",
+        "zero_gamma":         "#d29922",
+        "volatility_trigger": "#8957e5",
+        "large_gamma":        "#6e7681",
+    }
+    LABELS = {
+        "call_wall":          "Call Wall",
+        "put_wall":           "Put Wall",
+        "zero_gamma":         "Zero Gamma",
+        "volatility_trigger": "Vol Trigger",
+    }
+
+    levels = []
+    for inst_key in ("nq", "qqq", "ndx"):
+        inst_data = result.get(inst_key)
+        if not inst_data:
+            continue
+        tag = inst_key.upper()
+        for field, label in LABELS.items():
+            px = inst_data.get(field)
+            if px is not None:
+                levels.append({
+                    "name":       f"{tag} {label}",
+                    "price":      px,
+                    "color":      COLORS[field],
+                    "instrument": tag,
+                })
+        for i, px in enumerate(inst_data.get("large_gamma", []), start=1):
+            levels.append({
+                "name":       f"{tag} GEX {i}",
+                "price":      px,
+                "color":      COLORS["large_gamma"],
+                "instrument": tag,
+            })
+
+    payload = {
+        "date":         datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "generated_at": result.get("generated_at", ""),
+        "levels":       levels,
+    }
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    log.info("GEX levels written to %s (%d levels)", output_path, len(levels))
+
+
 def save_json(result: dict):
     """Save result dict as JSON file in output/ directory."""
     if not OUTPUT_CSV:
