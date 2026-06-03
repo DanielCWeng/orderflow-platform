@@ -562,6 +562,102 @@ function ChartLW(props) {
     }
   }
 
+  // ---- pxPerTick for VP cell heights ----
+  const pxPerTick = (() => {
+    if (!candles.length) return 4;
+    const ref = candles[candles.length - 1].c;
+    const y0 = p2y(ref), y1 = p2y(ref + TICK);
+    return (y0 != null && y1 != null) ? Math.abs(y1 - y0) : 4;
+  })();
+
+  // ---- renderGroupedVP: daily/weekly VP on chart with zoom-dependent aggregation ----
+  const renderGroupedVP = (vpEntries, colVA, colNon, prefix) => {
+    if (!vpEntries?.length || !chartRef.current) return null;
+    const out = [];
+    const cellH = Math.max(1, pxPerTick - 0.5);
+    const AGG_THRESH = 6; // barSpacing below this → aggregate
+
+    for (let gi = 0; gi < vpEntries.length; gi++) {
+      const g = vpEntries[gi];
+      if (!g.rows?.length || !g.barTimes?.length) continue;
+
+      const xs = g.barTimes.map(t => t2x(t)).filter(x => x != null);
+      if (!xs.length) continue;
+
+      const gxL = Math.min(...xs) - barSpacing / 2;
+      const gxR = Math.max(...xs) + barSpacing / 2;
+
+      if (barSpacing >= AGG_THRESH) {
+        // --- Per-bar profiles (zoomed in) ---
+        const timeSet = new Set(g.barTimes);
+        for (const c of candles) {
+          if (!timeSet.has(c.time)) continue;
+          const xc = t2x(c.time);
+          if (xc == null || !c.footprint?.length) continue;
+
+          let bMax = 0;
+          for (const f of c.footprint) { const t = f.bid + f.ask; if (t > bMax) bMax = t; }
+          if (!bMax) continue;
+
+          const xL = xc - barSpacing / 2;
+          for (let fi = 0; fi < c.footprint.length; fi++) {
+            const f = c.footprint[fi];
+            const y = p2y(f.px);
+            if (y == null) continue;
+            const tot = f.bid + f.ask;
+            if (!tot) continue;
+            const w = (tot / bMax) * barSpacing;
+            const va = f.px <= g.vah && f.px >= g.val;
+            const poc = Math.abs(f.px - g.poc) < 0.13;
+            out.push(<rect key={`${prefix}${gi}b${c.time}f${fi}`}
+              x={xL} y={y - pxPerTick / 2 + 0.5} width={w} height={cellH}
+              fill={va ? colVA : colNon} opacity={poc ? 0.7 : 0.35} />);
+          }
+        }
+      } else {
+        // --- Aggregated profile (zoomed out) ---
+        const span = Math.max(4, gxR - gxL);
+        const gMax = Math.max(1, ...g.rows.map(r => r.buy + r.sell));
+        for (let ri = 0; ri < g.rows.length; ri++) {
+          const r = g.rows[ri];
+          const y = p2y(r.px);
+          if (y == null) continue;
+          const tot = r.buy + r.sell;
+          const w = (tot / gMax) * span;
+          out.push(<rect key={`${prefix}${gi}a${ri}`}
+            x={gxL} y={y - pxPerTick / 2 + 0.5} width={w} height={cellH}
+            fill={r.va ? colVA : colNon} opacity={r.poc ? 0.7 : 0.35} />);
+        }
+      }
+
+      // POC / VAH / VAL reference lines spanning the group
+      const lblPfx = prefix === 'dvp' ? '' : 'w';
+      const yPoc = p2y(g.poc);
+      if (yPoc != null) {
+        out.push(<line key={`${prefix}${gi}Lpoc`} x1={gxL} x2={gxR} y1={yPoc} y2={yPoc}
+          stroke={colVA} strokeWidth="1.2" strokeDasharray="6 3" opacity="0.5" />);
+        out.push(<text key={`${prefix}${gi}Tpoc`} x={gxL - 4} y={yPoc + 3} fontSize="8"
+          fill={colVA} textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">{lblPfx}POC</text>);
+      }
+      const yVah = p2y(g.vah);
+      if (yVah != null) {
+        out.push(<line key={`${prefix}${gi}Lvah`} x1={gxL} x2={gxR} y1={yVah} y2={yVah}
+          stroke={colVA} strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />);
+        out.push(<text key={`${prefix}${gi}Tvah`} x={gxL - 4} y={yVah + 3} fontSize="8"
+          fill={colVA} textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">{lblPfx}VAH</text>);
+      }
+      const yVal = p2y(g.val);
+      if (yVal != null) {
+        out.push(<line key={`${prefix}${gi}Lval`} x1={gxL} x2={gxR} y1={yVal} y2={yVal}
+          stroke={colVA} strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />);
+        out.push(<text key={`${prefix}${gi}Tval`} x={gxL - 4} y={yVal + 3} fontSize="8"
+          fill={colVA} textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">{lblPfx}VAL</text>);
+      }
+    }
+
+    return out;
+  };
+
   // ---- drawing handlers ----
   const onDown = (e) => {
     if (tool === 'cursor') return;
@@ -649,7 +745,7 @@ function ChartLW(props) {
         <svg
           width={W} height={H}
           style={{
-            position:'absolute', inset:0,
+            position:'absolute', inset:0, zIndex:2,
             pointerEvents: tool === 'cursor' ? 'none' : 'auto',
             cursor: tool !== 'cursor' ? 'crosshair' : 'default',
           }}
@@ -660,50 +756,8 @@ function ChartLW(props) {
         >
           {/* VP overlay removed — rendered in strip below chart */}
 
-          {/* ── Daily Volume Profile overlay (right side) ── */}
-          {showDailyVP && chartRef.current && dailyVP && (() => {
-            // Use the last (most recent) day's VP
-            const dvp = dailyVP[dailyVP.length - 1];
-            if (!dvp || !dvp.rows.length) return null;
-            const dvpMax = Math.max(1, ...dvp.rows.map(r => r.buy + r.sell));
-            const dvpWidth = Math.max(30, W * 0.05);
-            const dvpX0 = xPxRight - dvpWidth;
-            return (
-              <g opacity="0.55">
-                {dvp.rows.map((r, i) => {
-                  const y = p2y(r.px);
-                  if (y == null) return null;
-                  const total = r.buy + r.sell;
-                  const w = (total / dvpMax) * dvpWidth;
-                  const col = r.va ? '#f0920a' : '#eedd00';
-                  return (
-                    <rect key={'dvp'+i} x={xPxRight - w} y={y - 1.2} width={w} height={2.4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
-                  );
-                })}
-                {/* VAH line */}
-                {(() => { const y = p2y(dvp.vah); return y != null ? (
-                  <g>
-                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#f0920a" strokeWidth="1" strokeDasharray="4 3" opacity="0.6" />
-                    <text x={dvpX0 - 4} y={y + 3} fontSize="8" fill="#f0920a" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">VAH</text>
-                  </g>
-                ) : null; })()}
-                {/* VAL line */}
-                {(() => { const y = p2y(dvp.val); return y != null ? (
-                  <g>
-                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#f0920a" strokeWidth="1" strokeDasharray="4 3" opacity="0.6" />
-                    <text x={dvpX0 - 4} y={y + 3} fontSize="8" fill="#f0920a" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">VAL</text>
-                  </g>
-                ) : null; })()}
-                {/* POC line */}
-                {(() => { const y = p2y(dvp.poc); return y != null ? (
-                  <g>
-                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#eedd00" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.5" />
-                    <text x={dvpX0 - 4} y={y + 3} fontSize="8" fill="#eedd00" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">POC</text>
-                  </g>
-                ) : null; })()}
-              </g>
-            );
-          })()}
+          {/* ── Daily Volume Profile (on-chart, zoom-adaptive) ── */}
+          {showDailyVP && renderGroupedVP(dailyVP, '#f0920a', '#eedd00', 'dvp')}
 
           {/* ── Weekly Volume Profile overlay (right side, bars point left) ── */}
           {showWeeklyVP && chartRef.current && weeklyVP && (() => {
@@ -715,35 +769,35 @@ function ChartLW(props) {
             // Offset left if dailyVP is also visible so they don't overlap
             const offset = showDailyVP && dailyVP && dailyVP.length ? Math.max(30, W * 0.05) + 2 : 0;
             return (
-              <g opacity="0.45">
+              <g>
                 {wvp.rows.map((r, i) => {
                   const y = p2y(r.px);
                   if (y == null) return null;
                   const total = r.buy + r.sell;
                   const w = (total / wvpMax) * wvpWidth;
-                  const col = r.va ? '#c084fc' : '#a855f7';
+                  const col = r.va ? '#7c3aed' : '#e9b8ff';
                   return (
-                    <rect key={'wvp'+i} x={xPxRight - offset - w} y={y - 1.2} width={w} height={2.4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
+                    <rect key={'wvp'+i} x={xPxRight - offset - w} y={y - 2} width={w} height={4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
                   );
                 })}
                 {/* VAH line */}
                 {(() => { const y = p2y(wvp.vah); return y != null ? (
                   <g>
-                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <line x1={wvpX0 - offset} x2={xPxRight - offset} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
                     <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAH</text>
                   </g>
                 ) : null; })()}
                 {/* VAL line */}
                 {(() => { const y = p2y(wvp.val); return y != null ? (
                   <g>
-                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <line x1={wvpX0 - offset} x2={xPxRight - offset} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
                     <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAL</text>
                   </g>
                 ) : null; })()}
                 {/* POC line */}
                 {(() => { const y = p2y(wvp.poc); return y != null ? (
                   <g>
-                    <line x1={0} x2={xPxRight} y1={y} y2={y} stroke="#a855f7" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.4" />
+                    <line x1={wvpX0 - offset} x2={xPxRight - offset} y1={y} y2={y} stroke="#a855f7" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.4" />
                     <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#a855f7" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wPOC</text>
                   </g>
                 ) : null; })()}

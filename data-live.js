@@ -500,7 +500,7 @@
     });
     const days = [];
     for (const [date, dayBars] of dayBuckets) {
-      days.push({ date, ...buildVP(dayBars) });
+      days.push({ date, barTimes: dayBars.map(b => b.time), ...buildVP(dayBars) });
     }
     return days;
   }
@@ -519,7 +519,7 @@
     });
     const weeks = [];
     for (const [weekStart, weekBars] of weekBuckets) {
-      weeks.push({ weekStart, ...buildVP(weekBars) });
+      weeks.push({ weekStart, barTimes: weekBars.map(b => b.time), ...buildVP(weekBars) });
     }
     return weeks;
   }

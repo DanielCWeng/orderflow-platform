@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-mock_server.py v3 — Realistic IronBeam API mock for orderflow-platform.
+mock_server.py v4 — Realistic IronBeam API mock for orderflow-platform.
 
-Key improvements over v2:
-  1. Ornstein-Uhlenbeck process for directional bias → organic, non-monotonic trends
-  2. Short-term momentum with mean-reversion → price moves in waves, not random walks
-  3. GARCH vol feeds back into book thickness and trade sizing
-  4. Replenish sizes vary ±50% each tick, scaled by vol → no fixed walls
-  5. LOB crossed-book protection and proper spread management
-  6. Gradual regime transitions (parameter blending over ~8s)
-  7. Toned-down regime asymmetry → no more ping-pong between 2 fixed points
+Key improvements over v3:
+  1. Decoupled market simulator from WS connections (single background loop)
+  2. History → live price continuity (global state synced after history gen)
+  3. L1 consumption adds to L2 instead of overwriting
+  4. Uncross only adjusts one side (no double vacuum)
+  5. Spread tightener randomly picks bid or ask side
+  6. Spoofing renders at empty price levels
+  7. Burst trade timestamps are staggered
+  8. GARCH uses correct lag index (-1 not -2)
+  9. Iceberg dynamically trails price during absorption
 
 Requirements:
     pip install aiohttp
@@ -115,20 +117,21 @@ class LOB:
         return bb or ba or INIT_PX
 
     def _uncross(self):
-        """Remove any crossed levels (bids >= best_ask or asks <= best_bid)."""
+        """Remove any crossed levels — only adjust the side with fewer affected levels."""
         ba = self.best_ask()
         bb = self.best_bid()
         if not ba or not bb:
             return
         if bb >= ba:
-            # Remove offending bids
-            to_del = [p for p in self.bids if p >= ba]
-            for p in to_del:
-                del self.bids[p]
-            # Remove offending asks
-            to_del = [p for p in self.asks if p <= bb]
-            for p in to_del:
-                del self.asks[p]
+            crossed_bids = [p for p in self.bids if p >= ba]
+            crossed_asks = [p for p in self.asks if p <= bb]
+            # Only delete the smaller side to avoid double vacuum
+            if len(crossed_bids) <= len(crossed_asks):
+                for p in crossed_bids:
+                    del self.bids[p]
+            else:
+                for p in crossed_asks:
+                    del self.asks[p]
 
     def consume_ask(self, size: int, replenish: int) -> tuple[float, bool]:
         """Market buy hits best ask.  Returns (trade_px, level_cleared)."""
@@ -143,7 +146,9 @@ class LOB:
             bb = self.best_bid()
             if not bb or new_px > bb:
                 jitter = max(1, replenish // 3)
-                self.asks[new_px] = max(1, replenish + random.randint(-jitter, jitter))
+                # Add to existing level instead of overwriting (fix 2A)
+                current_sz = self.asks.get(new_px, 0)
+                self.asks[new_px] = max(1, current_sz + replenish + random.randint(-jitter, jitter))
             self._fill_side('ask')
             self._uncross()
             return px, True
@@ -161,7 +166,9 @@ class LOB:
             ba = self.best_ask()
             if not ba or new_px < ba:
                 jitter = max(1, replenish // 3)
-                self.bids[new_px] = max(1, replenish + random.randint(-jitter, jitter))
+                # Add to existing level instead of overwriting (fix 2A)
+                current_sz = self.bids.get(new_px, 0)
+                self.bids[new_px] = max(1, current_sz + replenish + random.randint(-jitter, jitter))
             self._fill_side('bid')
             self._uncross()
             return px, True
@@ -205,14 +212,20 @@ class LOB:
         bb = self.best_bid()
         ba = self.best_ask()
 
-        # Fix blown spread: if > 2 ticks, gently fill inward
+        # Fix blown spread: if > 2 ticks, gently fill inward from random side (fix 2C)
         if bb and ba and round(ba - bb, 4) > TICK * 2:
             gap_ticks = int(round((ba - bb) / TICK))
             if gap_ticks > 2:
-                fill_px = snap(ba - TICK)
-                if fill_px not in self.bids:
-                    self.bids[fill_px] = max(1, bid_rep // 2 + random.randint(0, bid_rep // 4))
+                if random.random() > 0.5:
+                    fill_px = snap(ba - TICK)
+                    if fill_px not in self.bids:
+                        self.bids[fill_px] = max(1, bid_rep // 2 + random.randint(0, bid_rep // 4))
+                else:
+                    fill_px = snap(bb + TICK)
+                    if fill_px not in self.asks:
+                        self.asks[fill_px] = max(1, ask_rep // 2 + random.randint(0, ask_rep // 4))
                 bb = self.best_bid()
+                ba = self.best_ask()
 
         # Prune stale outer levels that drifted too far
         if bb and ba:
@@ -304,13 +317,14 @@ mkt = Market()
 
 _regime_queue: list[tuple] = []
 _history: list[dict] = []
+_ws_clients: set[web.WebSocketResponse] = set()  # all connected WS clients
 
 
 # ── OU bias update ────────────────────────────────────────────────────────────
 def update_ou_bias(m: 'Market', target: float):
     """
     Ornstein-Uhlenbeck step: bias drifts toward regime target but with
-    noise and momentum influence → organic, non-monotonic trends.
+    noise and momentum influence -> organic, non-monotonic trends.
     """
     # Momentum contribution: if price has been moving up, bias nudges up
     momentum = 0.0
@@ -330,7 +344,7 @@ def update_ou_bias(m: 'Market', target: float):
 # ── Blended regime parameters ─────────────────────────────────────────────────
 def blended_params(regime: tuple, m: 'Market') -> tuple:
     """
-    If we recently transitioned, blend old → new params over BLEND_DURATION.
+    If we recently transitioned, blend old -> new params over BLEND_DURATION.
     Returns (name, dur, buy_bias, ask_rep, bid_rep, vol_scalar, hz).
     """
     if m.prev_regime_params is None:
@@ -389,7 +403,7 @@ def generate_history() -> list[dict]:
             reg_start = t
             cur = reg_queue[0]
             if cur[0] == 'absorption':
-                h.iceberg_px = snap(h.price + 8 * TICK)
+                h.iceberg_px = snap(h.price + 2 * TICK)  # closer iceberg (fix 3E)
             if cur[0] == 'news_release':
                 for px in list(h.lob.asks): h.lob.asks[px] = max(1, h.lob.asks[px] // 8)
                 for px in list(h.lob.bids): h.lob.bids[px] = max(1, h.lob.bids[px] // 8)
@@ -432,8 +446,12 @@ def generate_history() -> list[dict]:
             if not px:
                 continue
 
-            if name == 'absorption' and is_buy and snap(px) == h.iceberg_px:
-                h.lob.asks[h.iceberg_px] = max(h.lob.asks.get(h.iceberg_px, 0), 800)
+            # Iceberg: recalculate if price drifted too far (fix 3E)
+            if name == 'absorption':
+                if abs(h.price - h.iceberg_px) > 6 * TICK:
+                    h.iceberg_px = snap(h.price + 2 * TICK)
+                if is_buy and snap(px) == h.iceberg_px:
+                    h.lob.asks[h.iceberg_px] = max(h.lob.asks.get(h.iceberg_px, 0), 800)
 
             prev    = h.price
             h.price = px
@@ -452,13 +470,13 @@ def generate_history() -> list[dict]:
             bar['c']  = px
             bar['v'] += sz
 
-            # GARCH update
+            # GARCH update (fix 3C: use -1 not -2)
             if prev:
                 ret = (px - prev) / TICK
                 h.recent_returns.append(ret)
                 if len(h.recent_returns) >= 4:
                     w, a, b = 0.025, 0.14, 0.83
-                    e2 = h.recent_returns[-2]
+                    e2 = h.recent_returns[-1]
                     h.vol = math.sqrt(max(1e-6, w + a * e2**2 + b * h.vol**2))
                     h.vol = max(0.05, min(5.0, h.vol))
 
@@ -473,6 +491,20 @@ def generate_history() -> list[dict]:
         messages.append({'ti': [dict(bar)]})
         if bar_trades:
             messages.append({'tr': bar_trades})
+
+    # Sync global state with history end state (fix 1B)
+    mkt.price  = h.price
+    mkt.open_  = h.price
+    mkt.high   = h.price
+    mkt.low    = h.price
+    mkt.volume = h.volume
+    mkt.delta  = h.delta
+    mkt.vol    = h.vol
+    mkt.ou_bias = h.ou_bias
+    mkt.lob    = h.lob
+    mkt.recent_returns = h.recent_returns
+    mkt.recent_moves = h.recent_moves
+    mkt.iceberg_px = h.iceberg_px
 
     print(f'[mock] history: {HISTORY_BARS} bars, {len(messages)} msgs, '
           f'final px={h.price:.2f}')
@@ -504,7 +536,7 @@ def get_regime() -> tuple:
         current = _regime_queue[0]
         name = current[0]
         if name == 'absorption':
-            mkt.iceberg_px = snap(mkt.price + 8 * TICK)
+            mkt.iceberg_px = snap(mkt.price + 2 * TICK)  # closer iceberg (fix 3E)
         if name == 'news_release':
             for px in list(mkt.lob.asks):
                 mkt.lob.asks[px] = max(1, mkt.lob.asks[px] // 8)
@@ -528,13 +560,13 @@ def trade_size() -> int:
     else:          return random.randint(50, 300)
 
 
-# ── GARCH vol update ──────────────────────────────────────────────────────────
+# ── GARCH vol update (fix 3C: use -1 not -2) ────────────────────────────────
 def update_vol(ret_ticks: float):
     mkt.recent_returns.append(ret_ticks)
     if len(mkt.recent_returns) < 4:
         return
     w, a, b = 0.025, 0.14, 0.83
-    e2 = mkt.recent_returns[-2]
+    e2 = mkt.recent_returns[-1]
     mkt.vol = math.sqrt(max(1e-6, w + a * e2 ** 2 + b * mkt.vol ** 2))
     mkt.vol = max(0.05, min(5.0, mkt.vol))
 
@@ -567,11 +599,14 @@ def gen_trade(regime: tuple) -> dict | None:
     if not px:
         return None
 
-    # Absorption iceberg
-    if name == 'absorption' and is_buy and snap(px) == mkt.iceberg_px:
-        mkt.lob.asks[mkt.iceberg_px] = max(
-            mkt.lob.asks.get(mkt.iceberg_px, 0), 800
-        )
+    # Absorption iceberg — recalculate if price drifted too far (fix 3E)
+    if name == 'absorption':
+        if abs(mkt.price - mkt.iceberg_px) > 6 * TICK:
+            mkt.iceberg_px = snap(mkt.price + 2 * TICK)
+        if is_buy and snap(px) == mkt.iceberg_px:
+            mkt.lob.asks[mkt.iceberg_px] = max(
+                mkt.lob.asks.get(mkt.iceberg_px, 0), 800
+            )
 
     # Update session state
     prev = mkt.price
@@ -615,6 +650,21 @@ def gen_depth(regime: tuple) -> dict:
         del mkt.flash[px]
 
     bids, asks = mkt.lob.snapshot()
+
+    # Inject flash levels into snapshot if they don't already exist (fix 3A)
+    bid_pxs = {px for px, _ in bids}
+    ask_pxs = {px for px, _ in asks}
+    bb = mkt.lob.best_bid()
+    ba = mkt.lob.best_ask()
+    for flash_px, (flash_sz, _) in mkt.flash.items():
+        if flash_px <= bb and flash_px not in bid_pxs:
+            bids.append((flash_px, 0))
+            bids.sort(key=lambda x: -x[0])
+            bids = bids[:DEPTH_LEVELS]
+        elif flash_px >= ba and flash_px not in ask_pxs:
+            asks.append((flash_px, 0))
+            asks.sort(key=lambda x: x[0])
+            asks = asks[:DEPTH_LEVELS]
 
     def enrich(levels, is_bid):
         out = []
@@ -672,7 +722,7 @@ async def handle_auth(_req):
 
 async def handle_create_stream(_req):
     sid = str(uuid.uuid4())
-    print(f'[mock] stream: {sid[:8]}…')
+    print(f'[mock] stream: {sid[:8]}...')
     return json_ok({'streamId': sid, 'status': 'OK', 'message': ''})
 
 async def handle_subscribe(req):
@@ -680,17 +730,98 @@ async def handle_subscribe(req):
     return json_ok({'status': 'OK', 'message': 'Subscribed'})
 
 
+# ── Broadcast helper ──────────────────────────────────────────────────────────
+async def broadcast(msg: str):
+    """Send a message to all connected WS clients, removing dead ones."""
+    dead = set()
+    for ws in _ws_clients:
+        try:
+            await ws.send_str(msg)
+        except Exception:
+            dead.add(ws)
+    _ws_clients -= dead
+
+
+# ── Background market simulator (fix 1A) ─────────────────────────────────────
+async def market_simulator_loop():
+    """
+    Single background loop that drives the market simulation and broadcasts
+    updates to all connected clients. Decoupled from individual connections.
+    """
+    bar_ts = int(time.time() // BAR_SEC) * BAR_SEC
+    bar = {'t': bar_ts, 'o': mkt.price, 'h': mkt.price,
+           'l': mkt.price, 'c': mkt.price, 'v': 0}
+    tick = 0
+
+    while True:
+        if not _ws_clients:
+            await asyncio.sleep(0.25)
+            continue
+
+        regime = get_regime()
+        params = blended_params(regime, mkt)
+        name = params[0]
+        base_hz = params[6]
+
+        # Trade count per tick
+        is_news  = (name == 'news_release')
+        is_burst = (not is_news) and (random.random() < 0.07)
+        n_trades = (random.randint(1, 2) if is_news
+                    else random.randint(8, 20) if is_burst
+                    else random.randint(1, 3))
+
+        trades = []
+        for burst_i in range(n_trades):
+            t = gen_trade(regime)
+            if t:
+                t['st'] = t['st'] + burst_i  # stagger burst timestamps (fix 3B)
+                trades.append(t)
+                bar['h'] = max(bar['h'], t['p'])
+                bar['l'] = min(bar['l'], t['p'])
+                bar['c'] = t['p']
+                bar['v'] += t['sz']
+
+        if trades:
+            await broadcast(json.dumps({'tr': trades}))
+
+        tick += 1
+        maybe_spoof(regime)
+
+        # Bar close
+        now_ts = int(time.time() // BAR_SEC) * BAR_SEC
+        if now_ts > bar['t']:
+            await broadcast(json.dumps({'ti': [dict(bar)]}))
+            bar = {'t': now_ts, 'o': mkt.price, 'h': mkt.price,
+                   'l': mkt.price, 'c': mkt.price, 'v': 0}
+            print(f'[mock] bar close @ {now_ts} | {name} | bias={mkt.ou_bias:.2f} vol={mkt.vol:.2f}')
+
+        # In-progress bar update every 3 ticks
+        if tick % 3 == 0:
+            await broadcast(json.dumps({'ti': [dict(bar)]}))
+
+        # DOM refresh
+        await broadcast(json.dumps(gen_depth(regime)))
+
+        # Quote every ~10 ticks
+        if tick % 10 == 0:
+            await broadcast(json.dumps(gen_quote()))
+
+        # Sleep
+        if is_burst:
+            await asyncio.sleep(0.015 + random.random() * 0.025)
+        else:
+            hz = base_hz * (0.6 + random.random() * 0.8)
+            await asyncio.sleep(hz)
+
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 async def handle_ws(req):
     sid = req.match_info['streamId']
     ws  = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(req)
-    print(f'[mock] WS connected: {sid[:8]}…')
+    print(f'[mock] WS connected: {sid[:8]}...')
 
     regime = get_regime()
-    bar_ts = int(time.time() // BAR_SEC) * BAR_SEC
-    bar = {'t': bar_ts, 'o': mkt.price, 'h': mkt.price,
-           'l': mkt.price, 'c': mkt.price, 'v': 0}
 
     # Initial snapshots
     await ws.send_str(json.dumps(gen_depth(regime)))
@@ -701,74 +832,43 @@ async def handle_ws(req):
         await ws.send_str(json.dumps(hist_msg))
 
     # Open live current bar
+    bar_ts = int(time.time() // BAR_SEC) * BAR_SEC
+    bar = {'t': bar_ts, 'o': mkt.price, 'h': mkt.price,
+           'l': mkt.price, 'c': mkt.price, 'v': 0}
     await ws.send_str(json.dumps({'ti': [dict(bar)]}))
 
-    tick = 0
+    # Register for broadcasts
+    _ws_clients.add(ws)
     try:
-        while not ws.closed:
-            regime = get_regime()
-            params = blended_params(regime, mkt)
-            name = params[0]
-            base_hz = params[6]
-
-            # Trade count per tick
-            is_news  = (name == 'news_release')
-            is_burst = (not is_news) and (random.random() < 0.07)
-            n_trades = (random.randint(1, 2) if is_news
-                        else random.randint(8, 20) if is_burst
-                        else random.randint(1, 3))
-
-            trades = []
-            for _ in range(n_trades):
-                t = gen_trade(regime)
-                if t:
-                    trades.append(t)
-                    bar['h'] = max(bar['h'], t['p'])
-                    bar['l'] = min(bar['l'], t['p'])
-                    bar['c'] = t['p']
-                    bar['v'] += t['sz']
-
-            if trades:
-                await ws.send_str(json.dumps({'tr': trades}))
-
-            tick += 1
-            maybe_spoof(regime)
-
-            # Bar close
-            now_ts = int(time.time() // BAR_SEC) * BAR_SEC
-            if now_ts > bar['t']:
-                await ws.send_str(json.dumps({'ti': [dict(bar)]}))
-                bar = {'t': now_ts, 'o': mkt.price, 'h': mkt.price,
-                       'l': mkt.price, 'c': mkt.price, 'v': 0}
-                print(f'[mock] bar close @ {now_ts} | {name} | bias={mkt.ou_bias:.2f} vol={mkt.vol:.2f}')
-
-            # In-progress bar update every 3 ticks
-            if tick % 3 == 0:
-                await ws.send_str(json.dumps({'ti': [dict(bar)]}))
-
-            # DOM refresh
-            await ws.send_str(json.dumps(gen_depth(regime)))
-
-            # Quote every ~10 ticks
-            if tick % 10 == 0:
-                await ws.send_str(json.dumps(gen_quote()))
-
-            # Sleep
-            if is_burst:
-                await asyncio.sleep(0.015 + random.random() * 0.025)
-            else:
-                hz = base_hz * (0.6 + random.random() * 0.8)
-                await asyncio.sleep(hz)
-
+        async for _msg in ws:
+            pass  # client messages are ignored; market sim broadcasts updates
     except Exception as e:
         print(f'[mock] WS error: {e}')
+    finally:
+        _ws_clients.discard(ws)
 
-    print(f'[mock] WS disconnected: {sid[:8]}…')
+    print(f'[mock] WS disconnected: {sid[:8]}...')
     return ws
+
+
+# ── App startup ───────────────────────────────────────────────────────────────
+async def on_startup(app):
+    """Start the background market simulator when the server starts."""
+    app['market_sim'] = asyncio.create_task(market_simulator_loop())
+
+async def on_cleanup(app):
+    """Cancel the market simulator on shutdown."""
+    app['market_sim'].cancel()
+    try:
+        await app['market_sim']
+    except asyncio.CancelledError:
+        pass
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = web.Application()
+app.on_startup.append(on_startup)
+app.on_cleanup.append(on_cleanup)
 app.router.add_route('OPTIONS', '/{path_info:.*}',                       handle_options)
 app.router.add_post('/auth',                                              handle_auth)
 app.router.add_get( '/v2/stream/create',                                  handle_create_stream)
@@ -784,7 +884,7 @@ if __name__ == '__main__':
     cycle = sum(r[1] for r in BASE_REGIMES)
     names = ' -> '.join(r[0] for r in BASE_REGIMES) + ' (news ~15% random)'
     print('-' * 60)
-    print(f'  Mock IronBeam v3   http://localhost:{PORT}')
+    print(f'  Mock IronBeam v4   http://localhost:{PORT}')
     print(f'  Bar: {BAR_SEC}s | Cycle: {cycle}s | Symbol: {SYMBOL}')
     print(f'  {names}')
     print(f'  Set MOCK = true in data-live.js')
