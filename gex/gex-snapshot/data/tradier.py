@@ -1,91 +1,32 @@
-"""Fetch QQQ and NDX equity options chains from the Tradier API."""
+"""Fetch QQQ and NDX equity options chains from Yahoo Finance via yfinance."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date
 
-import requests
+import yfinance as yf
 
-from config import TRADIER_BASE_URL, TRADIER_API_TOKEN
+from config import MONEYNESS_MIN, MONEYNESS_MAX
 
 log = logging.getLogger(__name__)
 
-
-def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {TRADIER_API_TOKEN}",
-        "Accept": "application/json",
-    }
-
-
-def _next_expirations(count: int = 2) -> list[str]:
-    """Return the next `count` weekly expiration dates (Fridays) as YYYY-MM-DD strings.
-
-    If today is a Friday (and market hasn't closed yet), include today as 0DTE.
-    """
-    today = datetime.utcnow().date()
-    exps = []
-    # Check if today is Friday — include as 0DTE
-    if today.weekday() == 4:
-        exps.append(today.strftime("%Y-%m-%d"))
-
-    d = today
-    while len(exps) < count:
-        # Move to next day
-        d += timedelta(days=1)
-        if d.weekday() == 4:  # Friday
-            exps.append(d.strftime("%Y-%m-%d"))
-
-    return exps
+# Map canonical symbol names to Yahoo Finance tickers
+_YAHOO_SYMBOL = {
+    "NDX": "^NDX",
+    "QQQ": "QQQ",
+}
 
 
-def _fetch_chain(symbol: str, expiration: str) -> list[dict]:
-    """Fetch a single options chain for symbol + expiration from Tradier."""
-    resp = requests.get(
-        f"{TRADIER_BASE_URL}/markets/options/chains",
-        params={
-            "symbol": symbol,
-            "expiration": expiration,
-            "greeks": "false",
-        },
-        headers=_headers(),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Tradier nests under options.option
-    options = data.get("options")
-    if not options:
-        return []
-    items = options.get("option", [])
-    if isinstance(items, dict):
-        items = [items]
-
-    return items
-
-
-def _get_spot(symbol: str) -> float | None:
-    """Get current spot price from Tradier quotes."""
+def _get_spot(ticker: yf.Ticker, symbol: str) -> float | None:
     try:
-        resp = requests.get(
-            f"{TRADIER_BASE_URL}/markets/quotes",
-            params={"symbols": symbol},
-            headers=_headers(),
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        quotes = data.get("quotes", {})
-        quote = quotes.get("quote", {})
-        if isinstance(quote, list):
-            quote = quote[0]
-        last = quote.get("last")
-        if last is not None:
-            return float(last)
-        bid = float(quote.get("bid", 0))
-        ask = float(quote.get("ask", 0))
-        if bid > 0 and ask > 0:
-            return (bid + ask) / 2.0
+        price = ticker.fast_info["last_price"]
+        if price:
+            return float(price)
+    except Exception:
+        pass
+    try:
+        hist = ticker.history(period="1d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
     except Exception as exc:
         log.warning("Failed to get %s spot: %s", symbol, exc)
     return None
@@ -93,53 +34,68 @@ def _get_spot(symbol: str) -> float | None:
 
 def fetch_equity_options(symbol: str) -> tuple[list[dict], float | None]:
     """
-    Fetch options chain for an equity symbol (QQQ or NDX).
+    Fetch options chain for an equity symbol (QQQ or NDX) via yfinance.
 
-    Fetches the two nearest weekly expirations. Returns (chain, spot).
+    Uses the two nearest available expirations.  Returns (chain, spot).
     """
-    expirations = _next_expirations(2)
-    log.info("Fetching %s chains for expirations: %s", symbol, expirations)
+    yahoo_sym = _YAHOO_SYMBOL.get(symbol, symbol)
+    ticker = yf.Ticker(yahoo_sym)
 
-    spot = _get_spot(symbol)
+    spot = _get_spot(ticker, symbol)
     log.info("%s spot: %s", symbol, spot)
+
+    try:
+        all_exps = ticker.options  # tuple of YYYY-MM-DD strings, ascending
+    except Exception as exc:
+        log.error("Failed to get %s expirations: %s", symbol, exc)
+        return [], spot
+
+    today = date.today()
+    expirations = [
+        exp for exp in all_exps
+        if (date.fromisoformat(exp) - today).days <= 30
+    ]
+    log.info("Fetching %s chains for expirations: %s", symbol, expirations)
 
     chain = []
     skipped = 0
 
-    # Sequential to avoid Tradier rate limits
     for exp in expirations:
         try:
-            items = _fetch_chain(symbol, exp)
+            opt = ticker.option_chain(exp)
         except Exception as exc:
             log.warning("Failed to fetch %s chain for %s: %s", symbol, exp, exc)
             continue
 
-        for item in items:
-            oi = int(item.get("open_interest", 0))
-            bid = float(item.get("bid", 0) or 0)
-            ask = float(item.get("ask", 0) or 0)
+        for option_type, df in [("CALL", opt.calls), ("PUT", opt.puts)]:
+            for _, row in df.iterrows():
+                oi = int(row.get("openInterest") or 0)
+                bid = float(row.get("bid") or 0)
+                ask = float(row.get("ask") or 0)
+                strike = float(row.get("strike") or 0)
 
-            if oi <= 0:
-                skipped += 1
-                continue
+                if oi <= 0:
+                    skipped += 1
+                    continue
 
-            option_type = str(item.get("option_type", "")).upper()
-            if option_type == "CALL" or option_type == "PUT":
-                pass
-            else:
-                # Tradier uses lowercase "call"/"put"
-                option_type = option_type.upper()
+                if spot and not (MONEYNESS_MIN * spot <= strike <= MONEYNESS_MAX * spot):
+                    skipped += 1
+                    continue
 
-            chain.append({
-                "symbol": item.get("symbol", ""),
-                "strike": float(item.get("strike", 0)),
-                "option_type": option_type,
-                "expiration_date": item.get("expiration_date", exp),
-                "oi": oi,
-                "bid": bid,
-                "ask": ask,
-                "underlying": symbol,
-            })
+                chain.append({
+                    "symbol":          str(row.get("contractSymbol", "")),
+                    "strike":          strike,
+                    "option_type":     option_type,
+                    "expiration_date": exp,
+                    "oi":              oi,
+                    "bid":             bid,
+                    "ask":             ask,
+                    "underlying":      symbol,
+                })
 
-    log.info("%s chain: %d contracts (skipped %d zero-OI)", symbol, len(chain), skipped)
+    log.info(
+        "%s chain: %d contracts (skipped %d — zero-OI or outside %.0f%%–%.0f%% moneyness)",
+        symbol, len(chain), skipped,
+        MONEYNESS_MIN * 100, MONEYNESS_MAX * 100,
+    )
     return chain, spot

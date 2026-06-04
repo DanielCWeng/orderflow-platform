@@ -338,11 +338,7 @@ function DeltaPanel() {
   const indData = window.OF_INDICATORS || {};
   const cvdState = indData.deltaCumulative || {};
 
-  if (!delta.length) return (
-    <div className="panel p-delta">
-      <div className="panel-h"><span className="title">Cumulative Delta</span></div>
-    </div>
-  );
+  if (!delta.length) return <div className="panel p-delta" />;
 
   const W = 1000, H = 100;
 
@@ -357,40 +353,34 @@ function DeltaPanel() {
     const xStep = bars.length > 1 ? W / (bars.length - 1) : W;
     const lastCvd = cvdState.live?.close ?? cvdState.candlestick[cvdState.candlestick.length - 1]?.close ?? 0;
 
+    const cvdLabelStyle = { position:'absolute', right:0, fontSize:'9px', lineHeight:'11px', color:'var(--fg-3)', fontFamily:"'JetBrains Mono',monospace", pointerEvents:'none' };
+    const overlayBtnStyle = { position:'absolute', top:2, left:2, zIndex:1, all:'unset', cursor:'pointer', fontSize:'9px', fontFamily:"'JetBrains Mono',monospace", color:'var(--fg-2)', background:'var(--bg-2)', border:'1px solid var(--line)', borderRadius:3, padding:'1px 5px', lineHeight:'14px', textTransform:'uppercase', letterSpacing:'0.06em' };
     return (
       <div className="panel p-delta">
-        <div className="panel-h">
-          <span className="title">Cumulative Delta</span>
-          <span className="sep" />
-          <span className="meta">CVD</span>
-          <span className="spacer" />
-          <div className="delta-stats">
-            <div className="s"><span className="k">CVD</span><span className={'v ' + (lastCvd >= 0 ? 'pos' : 'neg')}>{fmtSigned(Math.round(lastCvd))}</span></div>
-            <div className="s"><span className="k">Δ Session</span><span className={'v ' + (sessionStats.delta >= 0 ? 'pos' : 'neg')}>{fmtSigned(sessionStats.delta)}</span></div>
-          </div>
-          <button className="toggle on" onClick={() => setCvdMode(false)} title="Switch to bar delta">CVD</button>
-        </div>
         <div className="delta-wrap">
-          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }}>
-            <line x1={0} x2={W} y1={yScale(0)} y2={yScale(0)} stroke="var(--line)" strokeDasharray="2 3" />
-            {bars.map((b, i) => {
-              const x = i * xStep;
-              const yO = yScale(b.open), yC = yScale(b.close);
-              const yHi = yScale(b.high), yLo = yScale(b.low);
-              const up = b.close >= b.open;
-              const col = up ? 'var(--buy)' : 'var(--sell)';
-              const bW = Math.max(2, xStep * 0.7);
-              const bodyTop = Math.min(yO, yC), bodyH = Math.max(1, Math.abs(yO - yC));
-              return (
-                <g key={i}>
-                  <line x1={x} x2={x} y1={yHi} y2={yLo} stroke={col} strokeWidth="1" />
-                  <rect x={x - bW/2} y={bodyTop} width={bW} height={bodyH} fill={col} opacity="0.8" />
-                </g>
-              );
-            })}
-            <text x={W - 4} y={12} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">{Math.round(cvdMax)}</text>
-            <text x={W - 4} y={H - 2} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">{Math.round(cvdMin)}</text>
-          </svg>
+          <div style={{ flex:1, position:'relative', minHeight:0 }}>
+            <button style={overlayBtnStyle} onClick={() => setCvdMode(false)} title="Switch to bar delta">CVD</button>
+            <span style={{ ...cvdLabelStyle, top:0 }}>{Math.round(cvdMax)}</span>
+            <span style={{ ...cvdLabelStyle, bottom:0 }}>{Math.round(cvdMin)}</span>
+            <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }}>
+              <line x1={0} x2={W} y1={yScale(0)} y2={yScale(0)} stroke="var(--line)" strokeDasharray="2 3" />
+              {bars.map((b, i) => {
+                const x = i * xStep;
+                const yO = yScale(b.open), yC = yScale(b.close);
+                const yHi = yScale(b.high), yLo = yScale(b.low);
+                const up = b.close >= b.open;
+                const col = up ? 'var(--buy)' : 'var(--sell)';
+                const bW = Math.max(2, xStep * 0.7);
+                const bodyTop = Math.min(yO, yC), bodyH = Math.max(1, Math.abs(yO - yC));
+                return (
+                  <g key={i}>
+                    <line x1={x} x2={x} y1={yHi} y2={yLo} stroke={col} strokeWidth="1" />
+                    <rect x={x - bW/2} y={bodyTop} width={bW} height={bodyH} fill={col} opacity="0.8" />
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
         </div>
       </div>
     );
@@ -400,59 +390,58 @@ function DeltaPanel() {
   const xStep = delta.length > 1 ? W / (delta.length - 1) : W;
   const cumMax = Math.max(...delta.map((d) => d.cum));
   const cumMin = Math.min(...delta.map((d) => d.cum));
-  const range = Math.max(Math.abs(cumMax), Math.abs(cumMin)) * 1.15 || 1;
-  const yMid = H / 2;
-  const yScale = (v) => yMid - (v / range) * (H / 2 - 4);
-  const barMax = Math.max(...delta.map((d) => Math.abs(d.delta))) || 1;
-  const barH = 24;
-  const barY = H - barH - 2;
-  const path = delta.map((d, i) => `${i === 0 ? 'M' : 'L'}${(i * xStep).toFixed(1)},${yScale(d.cum).toFixed(1)}`).join(' ');
+  // Scale to actual data extent so line fills the chart regardless of whether
+  // CVD is net positive, net negative, or crosses zero.
+  const span    = Math.max(cumMax - cumMin, 1);
+  const dataLo  = cumMin - span * 0.06;
+  const dataHi  = cumMax + span * 0.06;
+  const LH = 60;
+  const yScale  = (v) => LH - 1 - ((v - dataLo) / (dataHi - dataLo)) * (LH - 2);
+  const zeroY   = Math.max(0, Math.min(LH, yScale(0)));
+  const barMax  = Math.max(...delta.map((d) => Math.abs(d.delta))) || 1;
+  const path    = delta.map((d, i) => `${i === 0 ? 'M' : 'L'}${(i * xStep).toFixed(1)},${yScale(d.cum).toFixed(1)}`).join(' ');
+  const labelStyle = { position:'absolute', right:0, fontSize:'9px', lineHeight:'11px', color:'var(--fg-3)', fontFamily:"'JetBrains Mono',monospace", pointerEvents:'none' };
+
+  const overlayBtnStyle = { position:'absolute', top:2, left:2, zIndex:1, all:'unset', cursor:'pointer', fontSize:'9px', fontFamily:"'JetBrains Mono',monospace", color:'var(--fg-2)', background:'var(--bg-2)', border:'1px solid var(--line)', borderRadius:3, padding:'1px 5px', lineHeight:'14px', textTransform:'uppercase', letterSpacing:'0.06em' };
 
   return (
     <div className="panel p-delta">
-      <div className="panel-h">
-        <span className="title">Cumulative Delta</span>
-        <span className="sep" />
-        <span className="meta">SESSION</span>
-        <span className="spacer" />
-        <div className="delta-stats">
-          <div className="s"><span className="k">Δ Session</span><span className={'v ' + (sessionStats.delta >= 0 ? 'pos' : 'neg')}>{fmtSigned(sessionStats.delta)}</span></div>
-          <div className="s"><span className="k">Δ Last Bar</span><span className={'v ' + ((delta[delta.length - 1]?.delta ?? 0) >= 0 ? 'pos' : 'neg')}>{fmtSigned(delta[delta.length - 1]?.delta ?? 0)}</span></div>
-          <div className="s"><span className="k">VWAP</span><span className="v mono">{fmtPx(sessionStats.vwap)}</span></div>
-        </div>
-        <button className="toggle" onClick={() => setCvdMode(true)} title="Switch to CVD candlestick">CVD</button>
-      </div>
       <div className="delta-wrap">
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }}>
-          <line x1={0} x2={W} y1={yMid} y2={yMid} stroke="var(--line)" strokeDasharray="2 3" />
-          <line x1={0} x2={W} y1={barY - 2} y2={barY - 2} stroke="var(--line-soft)" />
-          <path
-            d={`${path} L ${(W).toFixed(1)},${yMid} L 0,${yMid} Z`}
-            fill="url(#deltaGrad)"
-            opacity="0.4"
-          />
-          <defs>
-            <linearGradient id="deltaGrad" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="var(--buy)" stopOpacity="0.5" />
-              <stop offset="50%" stopColor="var(--buy)" stopOpacity="0.05" />
-              <stop offset="50%" stopColor="var(--sell)" stopOpacity="0.05" />
-              <stop offset="100%" stopColor="var(--sell)" stopOpacity="0.5" />
-            </linearGradient>
-          </defs>
-          <path d={path} fill="none" stroke="var(--fg-0)" strokeWidth="1.4" />
-          {delta.map((d, i) => {
-            const h = Math.max(1, (Math.abs(d.delta) / barMax) * (barH - 2));
-            const x = i * xStep - xStep * 0.4;
-            const w = xStep * 0.8;
-            const y = d.delta >= 0 ? barY + barH / 2 - h : barY + barH / 2;
-            const fill = d.delta >= 0 ? 'var(--buy)' : 'var(--sell)';
-            return <rect key={i} x={x} y={y} width={w} height={h} fill={fill} opacity="0.7" />;
-          })}
-          <line x1={0} x2={W} y1={barY + barH / 2} y2={barY + barH / 2} stroke="var(--line-soft)" />
-          <text x={W - 4} y={12} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">+{Math.round(range)}</text>
-          <text x={W - 4} y={yMid - 3} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">0</text>
-          <text x={W - 4} y={barY - 6} fontSize="9" fill="var(--fg-3)" textAnchor="end" fontFamily="JetBrains Mono">−{Math.round(range)}</text>
-        </svg>
+        {/* Cumulative line — fills remaining space, scaled to actual data range */}
+        <div style={{ flex:1, position:'relative', minHeight:0 }}>
+          <button style={overlayBtnStyle} onClick={() => setCvdMode(true)} title="Switch to CVD candlestick">CVD</button>
+          <span style={{ ...labelStyle, top:0 }}>{Math.round(cumMax)}</span>
+          <span style={{ ...labelStyle, bottom:0 }}>{Math.round(cumMin)}</span>
+          <svg viewBox={`0 0 ${W} ${LH}`} preserveAspectRatio="none" style={{ width:'100%', height:'100%' }}>
+            <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke="var(--line)" strokeDasharray="2 3" />
+            <path
+              d={`${path} L ${W.toFixed(1)},${zeroY} L 0,${zeroY} Z`}
+              fill="url(#deltaGrad)"
+              opacity="0.4"
+            />
+            <defs>
+              <linearGradient id="deltaGrad" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor="var(--buy)" stopOpacity="0.5" />
+                <stop offset="50%" stopColor="var(--buy)" stopOpacity="0.05" />
+                <stop offset="50%" stopColor="var(--sell)" stopOpacity="0.05" />
+                <stop offset="100%" stopColor="var(--sell)" stopOpacity="0.5" />
+              </linearGradient>
+            </defs>
+            <path d={path} fill="none" stroke="var(--fg-0)" strokeWidth="1.4" />
+          </svg>
+        </div>
+        {/* Delta bar histogram — fixed height, bottom-anchored so full height is always used */}
+        <div style={{ height:36, flexShrink:0 }}>
+          <svg viewBox={`0 0 ${W} 36`} preserveAspectRatio="none" style={{ width:'100%', height:'100%' }}>
+            {delta.map((d, i) => {
+              const h = Math.max(2, (Math.abs(d.delta) / barMax) * 34);
+              const x = i * xStep - xStep * 0.4;
+              const w = xStep * 0.8;
+              const fill = d.delta >= 0 ? 'var(--buy)' : 'var(--sell)';
+              return <rect key={i} x={x} y={36 - h} width={w} height={h} fill={fill} opacity="0.8" />;
+            })}
+          </svg>
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,7 @@
 requests
 scipy
 numpy
+pandas
+lxml
+yfinance
 python-dotenv

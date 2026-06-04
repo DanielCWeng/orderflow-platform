@@ -1,0 +1,38 @@
+1. Market Microstructure & Limit Order Book (LOB) Logic
+The Flaw: Market Orders Don't "Sweep" the Book
+Look at your consume_ask and consume_bid logic. If an aggressive 250-lot market buy order hits a best ask that only has 50 lots resting, your code deletes the level, creates a new level 1 tick higher, and the remaining 200 lots of the order simply vanish.
+Reality: Large orders "sweep the book." A 250-lot buy should consume the 50 lots at $5842.25, then consume 100 lots at $5842.50, and 100 lots at $5842.75. The trade tape should show a sweep, and the price should gap up instantaneously.
+Fix: Implement a while size > 0: loop in the consume functions that walks up the LOB, deducting size from L1, then L2, etc., until the order is filled, generating a cluster of trades at different price levels.
+The Flaw: Symmetrical Replenishment & Ignored Adverse Selection
+When price moves, your replenish() function mean-reverts both the bid and ask sides simultaneously based on mathematical decay.
+Reality: Market Makers (MMs) suffer from adverse selection. If a massive wave of market buys comes in, MMs don't just replenish the asks; they cancel (pull) their resting ask limit orders ahead of the price movement to avoid getting run over, and they heavily stack the bids behind the movement to provide support.
+Fix: Introduce "book skew." If mkt.recent_moves is positive (uptrend), instantly reduce ask_target by 40% and increase bid_target by 40%. Pull liquidity from the side being attacked.
+The Flaw: ES Spread is Almost Always 1 Tick
+You have logic to "fix blown spreads > 2 ticks." In the real ES market, a 2-tick spread happens for milliseconds, mostly during news like CPI or FOMC.
+Reality: ES is the most liquid equity index future in the world. MMs fiercely compete to be at the inside touch.
+Fix: Force the spread to be exactly 1 tick 99% of the time. If the spread ever widens to 2 ticks, the simulation should aggressively step in to fill the gap within the very next tick loop.
+2. Trade "Tape" & Order Flow Dynamics
+The Flaw: The Ping-Pong Effect (Independent Probabilities)
+You determine buy/sell by: is_buy = random.random() < mkt.ou_bias. If the bias is 0.50, you are flipping a coin every trade. The tape will read: BUY, SELL, BUY, BUY, SELL, BUY.
+Reality: Order flow is highly autocorrelated (a Hawkes Process). Market orders come in coordinated bursts from algorithms. If a trade is a BUY, the next trade within 50ms has an 80% chance of also being a BUY.
+Fix: Add a Markov Chain for trade signs. prob_buy = 0.85 if last_trade == 'BUY' else 0.15. Blend this with your macro ou_bias.
+The Flaw: Unrealistic Retail/Institutional Trade Sizing
+Your trade distribution caps at 300 lots. While large, raw market orders of 300+ lots do happen, they are rare block trades.
+Reality: Institutional players use TWAP/VWAP/Iceberg algorithms. They break a 500-lot order into fifty 10-lot orders fired over 3 seconds.
+Fix: Instead of generating one giant 300-lot trade, if your randomizer hits a "large trade", trigger a "Sweep State" that fires 20-40 trades of 5-15 lots exclusively on one side of the book over the next 0.5 seconds.
+3. Market Maker Behavior (Spoofing & Icebergs)
+The Flaw: Spoofing is Too Far Away
+Your spoofing logic places 500-1200 lots 5 to 10 ticks away from the inside market.
+Reality: An order 10 ticks away in ES doesn't influence the micro-price because it won't get filled anytime soon. Spoofers place large orders 1 to 3 ticks away to artificially thicken the book and scare HFTs into front-running them, pushing the L1 price.
+Fix: Change spoof distance to random.randint(2, 4). Remove it exactly when the price moves within 1 tick of it.
+The Flaw: Trailing Icebergs
+Your iceberg algorithmically trails the price by 2 ticks.
+Reality: Icebergs are usually placed at significant round numbers (e.g., $5840.00) or high-volume nodes. They don't normally trail the touch dynamically tick-by-tick.
+Fix: Pick a static round number near the current price and leave the iceberg there until it is fully absorbed or the regime ends.
+
+open_gap (60s): This is too short. The opening period on ES typically lasts 15-30 minutes of elevated activity.
+hard_trend (90s): Real trends on ES can persist for hours.
+lunchtime_chop (120s): Way too short. Lunch hour chop is 11:30am - 1:00pm ET, so 90 minutes.
+close_accel (90s): The closing acceleration period (MOC imbalances, market-on-close) typically happens in the last 10-30 minutes.
+The cycle is too fast and unrealistic. A real day has these sessions: pre-market, open (high vol), morning trend, mid-morning reversal, lunch chop, afternoon resumption, close.
+Rewrite the speed of the code so its got the full range of motion, just sped up. So instead of a day taking 6 hours. make it much shorter, but print candles faster. does that make sense?

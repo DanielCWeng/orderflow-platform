@@ -10,6 +10,7 @@ const DrawIcons = {
   text:   () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M4 4h8M8 4v9" /></svg>,
   trash:  () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9" /></svg>,
   undo:   () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8a5 5 0 1 1 1.6 3.6" /><path d="M3 4v4h4" /></svg>,
+  grip:   () => <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="5.5" cy="5" r="1.2"/><circle cx="10.5" cy="5" r="1.2"/><circle cx="5.5" cy="8" r="1.2"/><circle cx="10.5" cy="8" r="1.2"/><circle cx="5.5" cy="11" r="1.2"/><circle cx="10.5" cy="11" r="1.2"/></svg>,
 };
 
 // === Custom Series: Footprint cells ===
@@ -252,7 +253,7 @@ function createFootprintSeriesView() {
     defaultOptions() {
       return {
         mode: 'bidask', showDelta: true, showImb: true, barSpacing: 38,
-        buyColor: '#aac9dc', sellColor: '#e9ab9b', bg: '#0e1116', fg: '#f3ecdb',
+        buyColor: '#5ab5e6', sellColor: '#e85030', bg: '#0e1116', fg: '#dde1e8',
         priceLineVisible: false, lastValueVisible: false,
       };
     },
@@ -277,38 +278,72 @@ function ChartLW(props) {
     mode, setMode,
     showDelta, setShowDelta,
     showImb, setShowImb,
-    showVP, setShowVP,
     showDailyVP, setShowDailyVP,
     showWeeklyVP, setShowWeeklyVP,
     showVol, setShowVol,
-    showMarkers, setShowMarkers,
-    showIndOverlays, setShowIndOverlays,
+    showAbsorption,  setShowAbsorption,
+    showExhaustion,  setShowExhaustion,
+    showStackedImb,  setShowStackedImb,
+    showUFAMarks,    setShowUFAMarks,
+    showUFLines,     setShowUFLines,
+    showWalls,       setShowWalls,
+    showShiftCandle, setShowShiftCandle,
+    showDivergence,  setShowDivergence,
+    showLargePrints, setShowLargePrints,
+    showGex, setShowGex,
   } = props;
 
+  const [overlayMenuOpen, setOverlayMenuOpen] = React.useState(false);
+  const overlayMenuRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!overlayMenuOpen) return;
+    const handler = (e) => {
+      if (overlayMenuRef.current && !overlayMenuRef.current.contains(e.target))
+        setOverlayMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [overlayMenuOpen]);
+
+  const overlayItems = [
+    { key: 'abs',   label: 'Absorption',    val: showAbsorption,  set: setShowAbsorption },
+    { key: 'exh',   label: 'Exhaustion',    val: showExhaustion,  set: setShowExhaustion },
+    { key: 'simb',  label: 'Stacked Imb',   val: showStackedImb,  set: setShowStackedImb },
+    { key: 'ufa',   label: 'UFA Marks',     val: showUFAMarks,    set: setShowUFAMarks },
+    null,
+    { key: 'ufl',   label: 'UF Lines',      val: showUFLines,     set: setShowUFLines },
+    { key: 'wall',  label: 'Walls',         val: showWalls,       set: setShowWalls },
+{ key: 'shift', label: 'Shift Candle',  val: showShiftCandle, set: setShowShiftCandle },
+    { key: 'div',   label: 'Divergence',    val: showDivergence,  set: setShowDivergence },
+    null,
+    { key: 'lp',    label: 'Large Prints',  val: showLargePrints, set: setShowLargePrints },
+  ];
+  const anyOverlay = overlayItems.filter(Boolean).some(o => o.val);
+
   const { candles, sessionStats, vp, dailyVP, weeklyVP } = window.OF_DATA;
-  const [vpStripMode, setVpStripMode] = React.useState('session'); // 'session' | 'orderflow'
   const fps = window.OF_FOOTPRINT_STATS;
   const TICK = 0.25;
   const isFP = mode !== 'candle';
 
   const C = {
     bg:    '#0e1116',
-    text:  '#8a8675',
-    fg:    '#f3ecdb',
-    fg1:   '#cbc4b3',
+    text:  '#737880',
+    fg:    '#dde1e8',
+    fg1:   '#b0b5c0',
     line:  '#232a37',
     lineS: '#1c222d',
     panel: '#1a1f2a',
-    buy:   '#aac9dc',
-    sell:  '#e9ab9b',
-    buyT:  'rgba(170, 201, 220, 0.55)',
-    sellT: 'rgba(233, 171, 155, 0.55)',
+    buy:   '#5ab5e6',
+    sell:  '#e85030',
+    buyT:  'rgba(90, 181, 230, 0.55)',
+    sellT: 'rgba(232, 80, 48, 0.55)',
   };
 
   const containerRef = React.useRef(null);
   const chartRef = React.useRef(null);
   const seriesRef = React.useRef(null);
   const volSeriesRef = React.useRef(null);
+  const askSeriesRef = React.useRef(null);
   const fpSeriesRef = React.useRef(null);
   const vwapLineRef = React.useRef(null);
   const pocLineRef = React.useRef(null);
@@ -321,25 +356,53 @@ function ChartLW(props) {
 
   const [tool, setTool] = React.useState('cursor');
   const [drawings, setDrawings] = React.useState([]);
+  const [toolbarPos, setToolbarPos] = React.useState(null);
+
+  const onToolbarDragStart = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const toolbarEl = e.currentTarget.closest('.draw-toolbar');
+    const canvasEl = toolbarEl.parentElement;
+    const toolbarRect = toolbarEl.getBoundingClientRect();
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const offsetX = e.clientX - toolbarRect.left;
+    const offsetY = e.clientY - toolbarRect.top;
+    const onMove = (me) => {
+      setToolbarPos({
+        x: Math.max(0, me.clientX - canvasRect.left - offsetX),
+        y: Math.max(0, me.clientY - canvasRect.top - offsetY),
+      });
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
   const [pending, setPending] = React.useState(null);
   const [gexLevels, setGexLevels] = React.useState([]);
+  const [gexProfile, setGexProfile] = React.useState({});
 
-  // Fetch GEX levels file once on mount; silently ignore if not yet generated
+  // Fetch GEX levels file; reload on gex-run completion or at midnight
   React.useEffect(() => {
     const load = () => {
-      fetch('data/gex_levels.json?_=' + new Date().toDateString())
+      fetch('data/gex_levels.json?_=' + Date.now())
         .then(r => r.ok ? r.json() : null)
-        .then(d => { if (d?.levels) setGexLevels(d.levels); })
+        .then(d => { if (d?.levels) setGexLevels(d.levels); if (d?.profile) setGexProfile(d.profile); })
         .catch(() => {});
     };
     load();
-    // Refresh at midnight so the new day's levels are picked up automatically
+    document.addEventListener('of-gex-update', load);
     const msToMidnight = () => {
       const n = new Date();
       return new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1) - n;
     };
     const tid = setTimeout(() => { load(); }, msToMidnight());
-    return () => clearTimeout(tid);
+    return () => {
+      clearTimeout(tid);
+      document.removeEventListener('of-gex-update', load);
+    };
   }, []);
 
   // ---- init chart once ----
@@ -407,6 +470,7 @@ function ChartLW(props) {
       priceScaleId: 'vol',
       priceFormat: { type: 'volume' },
       lastValueVisible: false,
+      color: C.sellT,
     });
     vols.priceScale().applyOptions({
       scaleMargins: { top: 0.82, bottom: 0 },
@@ -414,15 +478,27 @@ function ChartLW(props) {
       borderVisible: false,
       visible: false,
     });
-    vols.setData(candles.map((c) => ({
-      time: c.time,
-      value: c.vol,
-      color: c.delta >= 0 ? C.buyT : C.sellT,
-    })));
+    const askPct = (c) => c.ask + c.bid > 0 ? c.ask / (c.ask + c.bid) : 0.5;
+    vols.setData(candles.map((c) => ({ time: c.time, value: c.vol, color: C.sellT })));
+
+    const asks = chart.addHistogramSeries({
+      priceScaleId: 'vol',
+      priceFormat: { type: 'volume' },
+      lastValueVisible: false,
+      color: C.buyT,
+    });
+    asks.priceScale().applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 },
+      drawTicks: false,
+      borderVisible: false,
+      visible: false,
+    });
+    asks.setData(candles.map((c) => ({ time: c.time, value: c.vol * askPct(c), color: C.buyT })));
 
     chartRef.current = chart;
     seriesRef.current = series;
     volSeriesRef.current = vols;
+    askSeriesRef.current = asks;
 
     // Custom Series for footprint cells
     let fpSeries = null;
@@ -486,29 +562,35 @@ function ChartLW(props) {
   React.useEffect(() => {
     if (!volSeriesRef.current) return;
     volSeriesRef.current.applyOptions({ visible: showVol });
+    if (askSeriesRef.current) askSeriesRef.current.applyOptions({ visible: showVol });
   }, [showVol]);
 
   // Track previous mode so we only reset barSpacing on candle↔FP transitions
   const prevModeRef = React.useRef(mode);
-  // Footprint mode / overlays
+
+  // FP series display options — safe to run on any overlay toggle, no LWC scroll side-effects
   React.useEffect(() => {
     if (fpSeriesRef.current) {
       fpSeriesRef.current.applyOptions({ mode, showDelta, showImb });
     }
-    // Hide main candlestick in FP mode — the custom renderer draws a thin candle instead
+  }, [mode, showDelta, showImb]);
+
+  // Candlestick visibility + barSpacing — only reacts to mode changes to avoid spurious chart jumps
+  React.useEffect(() => {
+    if (!chartRef.current) return;
     if (seriesRef.current) {
       seriesRef.current.applyOptions({ visible: mode === 'candle' });
     }
-    // Only reset barSpacing when crossing between candle and FP modes, not on every toggle
-    if (chartRef.current) {
-      const wasFP = prevModeRef.current !== 'candle';
-      const isFPNow = mode !== 'candle';
-      if (wasFP !== isFPNow) {
-        chartRef.current.timeScale().applyOptions({ barSpacing: isFPNow ? 38 : 14 });
-      }
-      prevModeRef.current = mode;
+    const wasFP = prevModeRef.current !== 'candle';
+    const isFPNow = mode !== 'candle';
+    if (wasFP !== isFPNow) {
+      // Preserve visible time range so bars don't fly when bar width changes
+      const prevRange = chartRef.current.timeScale().getVisibleLogicalRange();
+      chartRef.current.timeScale().applyOptions({ barSpacing: isFPNow ? 38 : 14 });
+      if (prevRange) chartRef.current.timeScale().setVisibleLogicalRange(prevRange);
     }
-  }, [mode, showDelta, showImb]);
+    prevModeRef.current = mode;
+  }, [mode]);
 
   // ---- sync series data whenever candles update ----
   React.useEffect(() => {
@@ -523,9 +605,8 @@ function ChartLW(props) {
         time: c.time, open: c.o, high: c.h, low: c.l, close: c.c,
       })));
       if (volSeriesRef.current) {
-        volSeriesRef.current.setData(candles.map((c) => ({
-          time: c.time, value: c.vol, color: c.delta >= 0 ? C.buyT : C.sellT,
-        })));
+        volSeriesRef.current.setData(candles.map((c) => ({ time: c.time, value: c.vol, color: C.sellT })));
+        if (askSeriesRef.current) askSeriesRef.current.setData(candles.map((c) => ({ time: c.time, value: c.vol * (c.ask + c.bid > 0 ? c.ask / (c.ask + c.bid) : 0.5), color: C.buyT })));
       }
       if (fpSeriesRef.current) {
         fpSeriesRef.current.setData(candles.map((c) => ({
@@ -540,9 +621,8 @@ function ChartLW(props) {
         time: last.time, open: last.o, high: last.h, low: last.l, close: last.c,
       });
       if (volSeriesRef.current) {
-        volSeriesRef.current.update({
-          time: last.time, value: last.vol, color: last.delta >= 0 ? C.buyT : C.sellT,
-        });
+        volSeriesRef.current.update({ time: last.time, value: last.vol, color: C.sellT });
+        if (askSeriesRef.current) askSeriesRef.current.update({ time: last.time, value: last.vol * (last.ask + last.bid > 0 ? last.ask / (last.ask + last.bid) : 0.5), color: C.buyT });
       }
       if (fpSeriesRef.current) {
         fpSeriesRef.current.setData(candles.map((c) => ({
@@ -589,93 +669,6 @@ function ChartLW(props) {
     return (y0 != null && y1 != null) ? Math.abs(y1 - y0) : 4;
   })();
 
-  // ---- renderGroupedVP: daily/weekly VP on chart with zoom-dependent aggregation ----
-  const renderGroupedVP = (vpEntries, colVA, colNon, prefix) => {
-    if (!vpEntries?.length || !chartRef.current) return null;
-    const out = [];
-    const cellH = Math.max(1, pxPerTick - 0.5);
-    const AGG_THRESH = 6; // barSpacing below this → aggregate
-
-    for (let gi = 0; gi < vpEntries.length; gi++) {
-      const g = vpEntries[gi];
-      if (!g.rows?.length || !g.barTimes?.length) continue;
-
-      const xs = g.barTimes.map(t => t2x(t)).filter(x => x != null);
-      if (!xs.length) continue;
-
-      const gxL = Math.min(...xs) - barSpacing / 2;
-      const gxR = Math.max(...xs) + barSpacing / 2;
-
-      if (barSpacing >= AGG_THRESH) {
-        // --- Per-bar profiles (zoomed in) ---
-        const timeSet = new Set(g.barTimes);
-        for (const c of candles) {
-          if (!timeSet.has(c.time)) continue;
-          const xc = t2x(c.time);
-          if (xc == null || !c.footprint?.length) continue;
-
-          let bMax = 0;
-          for (const f of c.footprint) { const t = f.bid + f.ask; if (t > bMax) bMax = t; }
-          if (!bMax) continue;
-
-          const xL = xc - barSpacing / 2;
-          for (let fi = 0; fi < c.footprint.length; fi++) {
-            const f = c.footprint[fi];
-            const y = p2y(f.px);
-            if (y == null) continue;
-            const tot = f.bid + f.ask;
-            if (!tot) continue;
-            const w = (tot / bMax) * barSpacing;
-            const va = f.px <= g.vah && f.px >= g.val;
-            const poc = Math.abs(f.px - g.poc) < 0.13;
-            out.push(<rect key={`${prefix}${gi}b${c.time}f${fi}`}
-              x={xL} y={y - pxPerTick / 2 + 0.5} width={w} height={cellH}
-              fill={va ? colVA : colNon} opacity={poc ? 0.7 : 0.35} />);
-          }
-        }
-      } else {
-        // --- Aggregated profile (zoomed out) ---
-        const span = Math.max(4, gxR - gxL);
-        const gMax = Math.max(1, ...g.rows.map(r => r.buy + r.sell));
-        for (let ri = 0; ri < g.rows.length; ri++) {
-          const r = g.rows[ri];
-          const y = p2y(r.px);
-          if (y == null) continue;
-          const tot = r.buy + r.sell;
-          const w = (tot / gMax) * span;
-          out.push(<rect key={`${prefix}${gi}a${ri}`}
-            x={gxL} y={y - pxPerTick / 2 + 0.5} width={w} height={cellH}
-            fill={r.va ? colVA : colNon} opacity={r.poc ? 0.7 : 0.35} />);
-        }
-      }
-
-      // POC / VAH / VAL reference lines spanning the group
-      const lblPfx = prefix === 'dvp' ? '' : 'w';
-      const yPoc = p2y(g.poc);
-      if (yPoc != null) {
-        out.push(<line key={`${prefix}${gi}Lpoc`} x1={gxL} x2={gxR} y1={yPoc} y2={yPoc}
-          stroke={colVA} strokeWidth="1.2" strokeDasharray="6 3" opacity="0.5" />);
-        out.push(<text key={`${prefix}${gi}Tpoc`} x={gxL - 4} y={yPoc + 3} fontSize="8"
-          fill={colVA} textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">{lblPfx}POC</text>);
-      }
-      const yVah = p2y(g.vah);
-      if (yVah != null) {
-        out.push(<line key={`${prefix}${gi}Lvah`} x1={gxL} x2={gxR} y1={yVah} y2={yVah}
-          stroke={colVA} strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />);
-        out.push(<text key={`${prefix}${gi}Tvah`} x={gxL - 4} y={yVah + 3} fontSize="8"
-          fill={colVA} textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">{lblPfx}VAH</text>);
-      }
-      const yVal = p2y(g.val);
-      if (yVal != null) {
-        out.push(<line key={`${prefix}${gi}Lval`} x1={gxL} x2={gxR} y1={yVal} y2={yVal}
-          stroke={colVA} strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />);
-        out.push(<text key={`${prefix}${gi}Tval`} x={gxL - 4} y={yVal + 3} fontSize="8"
-          fill={colVA} textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">{lblPfx}VAL</text>);
-      }
-    }
-
-    return out;
-  };
 
   // ---- drawing handlers ----
   const onDown = (e) => {
@@ -716,7 +709,6 @@ function ChartLW(props) {
 
   const W = size.w, H = size.h;
   const xPxRight = Math.max(0, W - psWidth - 2);
-  const vpMax = Math.max(1, ...vp.rows.map((r) => r.buy + r.sell));
   const vpWidth = Math.min(170, W * 0.24);
   const cellWBase = Math.max(2, barSpacing * 0.86);
   const lastBar = candles[candles.length - 1];
@@ -740,22 +732,29 @@ function ChartLW(props) {
         </div>
         <span className="sep" />
         <div className="seg">
-          <button className={'toggle '+(showVP?'on':'')} onClick={()=>setShowVP(!showVP)}>VP</button>
           <button className={'toggle '+(showDailyVP?'on':'')} onClick={()=>setShowDailyVP(!showDailyVP)} title="Daily Volume Profile">DlyVP</button>
           <button className={'toggle '+(showWeeklyVP?'on':'')} onClick={()=>setShowWeeklyVP(!showWeeklyVP)} title="Weekly Volume Profile">WkVP</button>
           <button className={'toggle '+(showVol?'on':'')} onClick={()=>setShowVol(!showVol)}>Vol</button>
-          <button className={'toggle '+(showMarkers?'on':'')} onClick={()=>setShowMarkers(!showMarkers)}>Marks</button>
-          <button className={'toggle '+(showIndOverlays?'on':'')} onClick={()=>setShowIndOverlays(!showIndOverlays)} title="Indicator overlays">IND</button>
         </div>
-        {showMarkers && fps && (<>
-          <span className="sep" />
-          <div className="fp-legend-inline">
-            <span className="chip imb"><span className="sw" /> Imb ≥{fps.thr.toFixed(1)}×</span>
-            <span className="chip imbs"><span className="sw" /> Stacked</span>
-            <span className="chip abs"><span className="sw" /> Absorp</span>
-            <span className="chip unf"><span className="sw" /> Unfin</span>
-          </div>
-        </>)}
+        <span className="sep" />
+        <div className="seg">
+          <button className={'toggle '+(showGex?'on':'')} onClick={()=>setShowGex(!showGex)} title="GEX levels overlay">GEX</button>
+        </div>
+        <div className="overlay-menu-wrap" ref={overlayMenuRef}>
+          <button className={'toggle '+(anyOverlay?'on':'')} onClick={()=>setOverlayMenuOpen(o=>!o)}>Overlays ▾</button>
+          {overlayMenuOpen && (
+            <div className="overlay-menu">
+              {overlayItems.map((item, i) =>
+                item === null
+                  ? <div key={'sep'+i} className="overlay-menu-sep" />
+                  : <label key={item.key} className="overlay-menu-row">
+                      <input type="checkbox" checked={item.val} onChange={()=>item.set(!item.val)} />
+                      {item.label}
+                    </label>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="chart-canvas">
@@ -775,8 +774,100 @@ function ChartLW(props) {
         >
           {/* VP overlay removed — rendered in strip below chart */}
 
-          {/* ── Daily Volume Profile (on-chart, zoom-adaptive) ── */}
-          {showDailyVP && renderGroupedVP(dailyVP, '#f0920a', '#eedd00', 'dvp')}
+          {/* ── GEX Profile (kebab) — per-strike gamma, left side ── */}
+          {showGex && chartRef.current && (() => {
+            const entries = Object.entries(gexProfile);
+            if (!entries.length) return null;
+
+            // Chart's current last price — used to scale strikes proportionally
+            const chartSpot = lastBar?.close ?? candles[candles.length - 1]?.close ?? 0;
+            if (!chartSpot) return null;
+
+            // Prefer NQ, then NDX, then QQQ
+            const order = ['NQ', 'NDX', 'QQQ'];
+            const sorted = [...entries].sort((a, b) => {
+              const ai = order.indexOf(a[0]), bi = order.indexOf(b[0]);
+              return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+            });
+
+            for (const [inst, data] of sorted) {
+              if (!data?.strikes?.length || !data.spot) continue;
+
+              // Scale each strike relative to the instrument spot → chart spot
+              // so the gamma shape appears at the correct proportional price on the chart
+              const scale = chartSpot / data.spot;
+              const scaled = data.strikes.map(([px, gex]) => [px * scale, gex]);
+              const visible = scaled.filter(([px]) => p2y(px) != null);
+              if (!visible.length) continue;
+
+              const maxAbs = Math.max(...visible.map(([, g]) => Math.abs(g)));
+              if (maxAbs === 0) continue;
+
+              const stripW = Math.max(50, Math.min(80, W * 0.07));
+              const spineX = stripW / 2;
+              const maxBarHalf = spineX - 4;
+              const barH = 3;
+
+              return (
+                <g key="gex-profile">
+                  <rect x={0} y={0} width={stripW} height={H} fill={C.bg} fillOpacity="0.55" />
+                  <line x1={spineX} x2={spineX} y1={0} y2={H} stroke="#555" strokeWidth="0.75" opacity="0.6" />
+                  {visible.map(([px, gex], i) => {
+                    const y = p2y(px);
+                    if (y == null) return null;
+                    const barLen = (Math.abs(gex) / maxAbs) * maxBarHalf;
+                    if (barLen < 0.5) return null;
+                    const isPos = gex >= 0;
+                    const x1 = isPos ? spineX : spineX - barLen;
+                    const col = isPos ? '#3fb950' : '#f85149';
+                    return (
+                      <rect key={i} x={x1} y={y - barH / 2} width={barLen} height={barH}
+                        fill={col} opacity="0.75" />
+                    );
+                  })}
+                  <text x={3} y={12} fontSize="8" fill="#888" fontFamily="JetBrains Mono" opacity="0.85">{inst} γ</text>
+                </g>
+              );
+            }
+            return null;
+          })()}
+
+          {/* ── Daily Volume Profile (left side, current session) ── */}
+          {showDailyVP && chartRef.current && dailyVP && (() => {
+            const dvp = dailyVP[dailyVP.length - 1];
+            if (!dvp || !dvp.rows.length) return null;
+            const dvpMax = Math.max(1, ...dvp.rows.map(r => r.buy + r.sell));
+            const dvpWidth = Math.max(20, W * 0.035);
+            return (
+              <g>
+                {dvp.rows.map((r, i) => {
+                  const y = p2y(r.px);
+                  if (y == null) return null;
+                  const w = ((r.buy + r.sell) / dvpMax) * dvpWidth;
+                  const col = r.va ? '#f0920a' : '#eedd00';
+                  return <rect key={'dvp'+i} x={0} y={y - 2} width={w} height={4} fill={col} opacity={r.poc ? 0.9 : 0.55} />;
+                })}
+                {(() => { const y = p2y(dvp.vah); return y != null ? (
+                  <g>
+                    <line x1={0} x2={dvpWidth} y1={y} y2={y} stroke="#f0920a" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <text x={dvpWidth + 4} y={y + 3} fontSize="8" fill="#f0920a" textAnchor="start" fontFamily="JetBrains Mono" opacity="0.7">VAH</text>
+                  </g>
+                ) : null; })()}
+                {(() => { const y = p2y(dvp.val); return y != null ? (
+                  <g>
+                    <line x1={0} x2={dvpWidth} y1={y} y2={y} stroke="#f0920a" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <text x={dvpWidth + 4} y={y + 3} fontSize="8" fill="#f0920a" textAnchor="start" fontFamily="JetBrains Mono" opacity="0.7">VAL</text>
+                  </g>
+                ) : null; })()}
+                {(() => { const y = p2y(dvp.poc); return y != null ? (
+                  <g>
+                    <line x1={0} x2={dvpWidth} y1={y} y2={y} stroke="#f59e42" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.4" />
+                    <text x={dvpWidth + 4} y={y + 3} fontSize="8" fill="#f59e42" textAnchor="start" fontFamily="JetBrains Mono" opacity="0.7">POC</text>
+                  </g>
+                ) : null; })()}
+              </g>
+            );
+          })()}
 
           {/* ── Weekly Volume Profile overlay (right side, bars point left) ── */}
           {showWeeklyVP && chartRef.current && weeklyVP && (() => {
@@ -785,8 +876,6 @@ function ChartLW(props) {
             const wvpMax = Math.max(1, ...wvp.rows.map(r => r.buy + r.sell));
             const wvpWidth = Math.max(30, W * 0.05);
             const wvpX0 = xPxRight - wvpWidth;
-            // Offset left if dailyVP is also visible so they don't overlap
-            const offset = showDailyVP && dailyVP && dailyVP.length ? Math.max(30, W * 0.05) + 2 : 0;
             return (
               <g>
                 {wvp.rows.map((r, i) => {
@@ -796,28 +885,28 @@ function ChartLW(props) {
                   const w = (total / wvpMax) * wvpWidth;
                   const col = r.va ? '#7c3aed' : '#e9b8ff';
                   return (
-                    <rect key={'wvp'+i} x={xPxRight - offset - w} y={y - 2} width={w} height={4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
+                    <rect key={'wvp'+i} x={xPxRight - w} y={y - 2} width={w} height={4} fill={col} opacity={r.poc ? 0.9 : 0.55} />
                   );
                 })}
                 {/* VAH line */}
                 {(() => { const y = p2y(wvp.vah); return y != null ? (
                   <g>
-                    <line x1={wvpX0 - offset} x2={xPxRight - offset} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
-                    <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAH</text>
+                    <line x1={wvpX0} x2={xPxRight} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <text x={wvpX0 - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAH</text>
                   </g>
                 ) : null; })()}
                 {/* VAL line */}
                 {(() => { const y = p2y(wvp.val); return y != null ? (
                   <g>
-                    <line x1={wvpX0 - offset} x2={xPxRight - offset} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
-                    <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAL</text>
+                    <line x1={wvpX0} x2={xPxRight} y1={y} y2={y} stroke="#c084fc" strokeWidth="1" strokeDasharray="4 3" opacity="0.5" />
+                    <text x={wvpX0 - 4} y={y + 3} fontSize="8" fill="#c084fc" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wVAL</text>
                   </g>
                 ) : null; })()}
                 {/* POC line */}
                 {(() => { const y = p2y(wvp.poc); return y != null ? (
                   <g>
-                    <line x1={wvpX0 - offset} x2={xPxRight - offset} y1={y} y2={y} stroke="#a855f7" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.4" />
-                    <text x={wvpX0 - offset - 4} y={y + 3} fontSize="8" fill="#a855f7" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wPOC</text>
+                    <line x1={wvpX0} x2={xPxRight} y1={y} y2={y} stroke="#a855f7" strokeWidth="1.2" strokeDasharray="6 3" opacity="0.4" />
+                    <text x={wvpX0 - 4} y={y + 3} fontSize="8" fill="#a855f7" textAnchor="end" fontFamily="JetBrains Mono" opacity="0.7">wPOC</text>
                   </g>
                 ) : null; })()}
               </g>
@@ -825,12 +914,11 @@ function ChartLW(props) {
           })()}
 
           {/* ── Indicator Overlays ── */}
-          {showIndOverlays && chartRef.current && (() => {
+          {chartRef.current && (() => {
             const ind = window.OF_INDICATORS || {};
 
             // 1. UnfinishedAuction — dashed horizontal lines at open levels
-            const uaLevels = ind.unfinishedAuction?.openLevels || [];
-            const uaElems = uaLevels.map((lvl, i) => {
+            const uaElems = showUFLines ? (ind.unfinishedAuction?.openLevels || []).map((lvl, i) => {
               const y = p2y(lvl.px);
               if (y == null) return null;
               const col = lvl.type === 'HIGH' ? C.sell : C.buy;
@@ -842,11 +930,10 @@ function ChartLW(props) {
                   </text>
                 </g>
               );
-            });
+            }) : [];
 
             // 2. DeepWall — solid horizontal lines at active wall prices
-            const walls = ind.deepWall?.activeWalls || [];
-            const wallElems = walls.map((wall, i) => {
+            const wallElems = showWalls ? (ind.deepWall?.activeWalls || []).map((wall, i) => {
               const y = p2y(wall.px);
               if (y == null) return null;
               const col = wall.side === 'ASK' ? C.sell : C.buy;
@@ -855,33 +942,15 @@ function ChartLW(props) {
                 <g key={'wall'+i}>
                   <line x1={0} x2={xPxRight} y1={y} y2={y} stroke={col} strokeWidth={sw} opacity="0.6" />
                   <text x={4} y={y - 3} fontSize="8" fill={col} fontFamily="JetBrains Mono">
-                    WALL {wall.px.toFixed(2)} {wall.domConfirmed ? '●' : ''}
+                    WALL {wall.px.toFixed(2)} {wall.domConfirmed ? '●' : ''}{wall.replenishConfirmed ? '◆' : ''}
                   </text>
                 </g>
               );
-            });
+            }) : [];
 
-            // 3. ImbalanceTracker — semi-transparent zone bands extending right from bar start
-            const freshZones    = ind.imbalanceTracker?.freshZones    || [];
-            const triggeredZones= ind.imbalanceTracker?.triggeredZones || [];
-            const zoneElems = [
-              ...freshZones.map((z, i) => {
-                const xZ = t2x(z.ts); const y = p2y(z.px);
-                if (xZ == null || y == null) return null;
-                const col = z.side === 'ASK' ? C.buy : C.sell;
-                return <rect key={'fz'+i} x={xZ} y={y-1.5} width={Math.max(0, xPxRight-xZ)} height={3} fill={col} opacity="0.18" />;
-              }),
-              ...triggeredZones.map((z, i) => {
-                const xZ = t2x(z.ts); const y = p2y(z.px);
-                if (xZ == null || y == null) return null;
-                const col = z.side === 'ASK' ? C.buy : C.sell;
-                return <rect key={'tz'+i} x={xZ} y={y-1.5} width={Math.max(0, xPxRight-xZ)} height={3} fill={col} opacity="0.07" strokeDasharray="2 2" />;
-              }),
-            ];
 
             // 4. ShiftCandle — triangle markers above/below bars at signal timestamps
-            const shiftSigs = (window.OF_INDICATOR_MGR?.shiftCandle?.signals || []).slice(-20);
-            const shiftElems = shiftSigs.map((sig, i) => {
+            const shiftElems = showShiftCandle ? (window.OF_INDICATOR_MGR?.shiftCandle?.signals || []).slice(-20).map((sig, i) => {
               const xS = t2x(sig.ts);
               if (xS == null) return null;
               const bar = candles.find(c => c.time === sig.ts);
@@ -894,11 +963,10 @@ function ChartLW(props) {
                 ? `${xS},${y+10} ${xS-5},${y+18} ${xS+5},${y+18}`
                 : `${xS},${y-10} ${xS-5},${y-18} ${xS+5},${y-18}`;
               return <polygon key={'sh'+i} points={pts} fill={col} opacity="0.85" />;
-            });
+            }) : [];
 
             // 5. DivergenceDetector — small D circles at swing pivot price/time
-            const divs = ind.divergenceDetector?.divergences || [];
-            const divElems = divs.slice(-10).map((d, i) => {
+            const divElems = showDivergence ? (ind.divergenceDetector?.divergences || []).slice(-10).map((d, i) => {
               const xD = t2x(d.ts); const y = p2y(d.px);
               if (xD == null || y == null) return null;
               const col = d.type === 'BEARISH_DIVERGENCE' ? C.sell : C.buy;
@@ -909,47 +977,93 @@ function ChartLW(props) {
                   <text x={xD} y={y+yOff+3} textAnchor="middle" fontSize="8" fill={C.bg} fontWeight="700" fontFamily="JetBrains Mono">D</text>
                 </g>
               );
-            });
+            }) : [];
 
-            return [...uaElems, ...wallElems, ...zoneElems, ...shiftElems, ...divElems];
+            return [...uaElems, ...wallElems, ...shiftElems, ...divElems];
+          })()}
+
+          {/* Stacked Imbalance Boxes (FVG style) */}
+          {showStackedImb && chartRef.current && (() => {
+            const boxes = [];
+            candles.forEach((c, ci) => {
+              const xStart = t2x(c.time);
+              if (xStart == null || !c.stackedImb.length) return;
+              c.stackedImb.forEach((st, si) => {
+                const fLo = c.footprint[st.from];
+                const fHi = c.footprint[st.to];
+                if (!fLo || !fHi) return;
+                const bodyLo = Math.min(c.o, c.c);
+                const bodyHi = Math.max(c.o, c.c);
+                const pxLo = Math.max(fLo.px, bodyLo);
+                const pxHi = Math.min(fHi.px, bodyHi);
+                if (pxHi <= pxLo) return;
+                const yTop = p2y(pxHi);
+                const yBot = p2y(pxLo);
+                if (yTop == null || yBot == null || yBot <= yTop) return;
+                const col = st.dir === 'ask' ? C.buy : C.sell;
+                // Stretch to right edge; stop at first candle that trades into the zone
+                let xEnd = xPxRight;
+                for (let j = ci + 1; j < candles.length; j++) {
+                  const nc = candles[j];
+                  if (nc.l <= pxHi && nc.h >= pxLo) {
+                    const xMit = t2x(nc.time);
+                    if (xMit != null) xEnd = xMit + cellWBase / 2;
+                    break;
+                  }
+                }
+                const x = xStart + cellWBase / 2;
+                const w = xEnd - x;
+                if (w <= 0) return;
+                // High-conviction (ask stack in upper third / bid stack in lower third):
+                // brighter fill + thicker border
+                boxes.push(
+                  <rect key={`imb-${ci}-${si}`}
+                    x={x} y={yTop} width={w} height={yBot - yTop}
+                    fill={col} fillOpacity={st.highConv ? 0.14 : 0.06}
+                    stroke={col} strokeWidth={st.highConv ? 1.5 : 0.8} strokeOpacity={st.highConv ? 0.75 : 0.4} />
+                );
+              });
+            });
+            return boxes;
           })()}
 
           {/* Markers */}
-          {showMarkers && chartRef.current && candles.map((c) => {
+          {(showAbsorption || showExhaustion || showUFAMarks) && chartRef.current && (() => {
+            const _ind = window.OF_INDICATORS || {};
+            const openHighPxs = showUFAMarks ? new Set((_ind.unfinishedAuction?.openLevels || []).filter(l => l.type === 'HIGH').map(l => l.px)) : new Set();
+            const openLowPxs  = showUFAMarks ? new Set((_ind.unfinishedAuction?.openLevels || []).filter(l => l.type === 'LOW').map(l => l.px))  : new Set();
+            return candles.map((c) => {
             const xc = t2x(c.time);
             if (xc == null) return null;
             const cw = cellWBase;
             const yH = p2y(c.h), yL = p2y(c.l);
             return (
               <g key={'mk'+c.i}>
-                {c.stackedImb.map((st, si) => {
-                  const f0 = c.footprint[st.from];
-                  const f1 = c.footprint[st.to];
-                  const y0 = p2y(f1.px), y1 = p2y(f0.px);
-                  if (y0 == null || y1 == null) return null;
-                  const col = st.dir === 'ask' ? C.buy : C.sell;
-                  const xb = xc + cw/2 + 2.5;
-                  return (
-                    <g key={si}>
-                      <line x1={xb} x2={xb} y1={y0-4} y2={y1+4} stroke={col} strokeWidth="1.6" />
-                      <line x1={xb-2.5} x2={xb+2.5} y1={y0-4} y2={y0-4} stroke={col} strokeWidth="1.2" />
-                      <line x1={xb-2.5} x2={xb+2.5} y1={y1+4} y2={y1+4} stroke={col} strokeWidth="1.2" />
-                    </g>
-                  );
-                })}
-                {c.absorption && yH != null && (
+                {showAbsorption && c.absorption && yH != null && (
                   <g>
                     <circle cx={xc} cy={yH-9} r="4.5" fill={C.fg} />
                     <text x={xc} y={yH-6.5} fontSize="7" fill={C.bg} textAnchor="middle" fontWeight="700">A</text>
                   </g>
                 )}
-                {c.unfinishedHi && yH != null && (
+                {showExhaustion && c.exhaustion && c.delta > 0 && yH != null && (
+                  <g>
+                    <circle cx={xc} cy={yH-9} r="4.5" fill="oklch(72% 0.18 55)" />
+                    <text x={xc} y={yH-6.5} fontSize="7" fill={C.bg} textAnchor="middle" fontWeight="700">X</text>
+                  </g>
+                )}
+                {showExhaustion && c.exhaustion && c.delta < 0 && yL != null && (
+                  <g>
+                    <circle cx={xc} cy={yL+9} r="4.5" fill="oklch(72% 0.18 55)" />
+                    <text x={xc} y={yL+11.5} fontSize="7" fill={C.bg} textAnchor="middle" fontWeight="700">X</text>
+                  </g>
+                )}
+                {showUFAMarks && c.unfinishedHi && yH != null && openHighPxs.has(c.h) && (
                   <g>
                     <line x1={xc-cw/2-2} x2={xc+cw/2+2} y1={yH} y2={yH} stroke={C.sell} strokeWidth="1.5" strokeDasharray="1.2 1.2" />
                     <text x={xc+cw/2+4} y={yH+3} fontSize="8" fill={C.sell} fontFamily="JetBrains Mono">UFA</text>
                   </g>
                 )}
-                {c.unfinishedLo && yL != null && (
+                {showUFAMarks && c.unfinishedLo && yL != null && openLowPxs.has(c.l) && (
                   <g>
                     <line x1={xc-cw/2-2} x2={xc+cw/2+2} y1={yL} y2={yL} stroke={C.sell} strokeWidth="1.5" strokeDasharray="1.2 1.2" />
                     <text x={xc+cw/2+4} y={yL+3} fontSize="8" fill={C.sell} fontFamily="JetBrains Mono">UFA</text>
@@ -957,29 +1071,59 @@ function ChartLW(props) {
                 )}
               </g>
             );
-          })}
+          });
+          })()}
+
+          {/* ── Large Print Circles ── */}
+          {showLargePrints && chartRef.current && (() => {
+            const lp = window.OF_DATA.largeTrades || [];
+            return lp.map((tr, i) => {
+              if (!tr.barTime) return null;
+              const x = t2x(tr.barTime);
+              const y = p2y(tr.px);
+              if (x == null || y == null) return null;
+              const r = Math.max(5, Math.min(20, 4 + 3.5 * Math.log2(tr.size / 25 + 1)));
+              const col = tr.side === 'buy' ? '#22d3ee' : '#f87171';
+              const fillOp = tr.size >= 200 ? 0.22 : 0.14;
+              return (
+                <g key={'lp' + i}>
+                  <circle cx={x} cy={y} r={r} fill={col} fillOpacity={fillOp} stroke={col} strokeWidth="1.2" strokeOpacity="0.75" />
+                  {tr.size >= 100 && (
+                    <text x={x} y={y + 3} textAnchor="middle" fontSize="8" fill={col} fontFamily="JetBrains Mono" fontWeight="600" opacity="0.9">{tr.size}</text>
+                  )}
+                </g>
+              );
+            });
+          })()}
 
           {/* Drawings */}
           {/* ── GEX Levels (loaded from data/gex_levels.json) ── */}
-          {chartRef.current && gexLevels.map((lvl, i) => {
-            const y = p2y(lvl.price);
-            if (y == null) return null;
-            const midX = xPxRight / 2;
-            const label = `${lvl.name}  ${lvl.price.toFixed(2)}`;
-            const lblW = label.length * 6.4 + 10;
-            return (
-              <g key={'gex' + i}>
-                <line x1={0} x2={xPxRight} y1={y} y2={y}
-                  stroke={lvl.color} strokeWidth="1" strokeDasharray="6 4" opacity="0.65" />
-                <rect x={midX - lblW / 2} y={y - 9} width={lblW} height={14}
-                  fill={C.bg} fillOpacity="0.82" rx="2" />
-                <text x={midX} y={y + 3} fontSize="9.5" fontFamily="JetBrains Mono"
-                  fontWeight="600" fill={lvl.color} textAnchor="middle">
-                  {label}
-                </text>
-              </g>
-            );
-          })}
+          {showGex && chartRef.current && (() => {
+            const chartSpot = lastBar?.close ?? candles[candles.length - 1]?.close ?? 0;
+            return gexLevels.map((lvl, i) => {
+              // Scale price proportionally if the level has a spot reference
+              const displayPx = (lvl.spot && chartSpot)
+                ? chartSpot * (lvl.price / lvl.spot)
+                : lvl.price;
+              const y = p2y(displayPx);
+              if (y == null) return null;
+              const midX = xPxRight / 2;
+              const label = `${lvl.name}  ${lvl.price.toFixed(2)}`;
+              const lblW = label.length * 6.4 + 10;
+              return (
+                <g key={'gex' + i}>
+                  <line x1={0} x2={xPxRight} y1={y} y2={y}
+                    stroke={lvl.color} strokeWidth="1" strokeDasharray="6 4" opacity="0.65" />
+                  <rect x={midX - lblW / 2} y={y - 9} width={lblW} height={14}
+                    fill={C.bg} fillOpacity="0.82" rx="2" />
+                  <text x={midX} y={y + 3} fontSize="9.5" fontFamily="JetBrains Mono"
+                    fontWeight="600" fill={lvl.color} textAnchor="middle">
+                    {label}
+                  </text>
+                </g>
+              );
+            });
+          })()}
 
           {chartRef.current && [...drawings, ...(pending ? [pending] : [])].map((d) => {
             const x1 = t2x(d.a.t), y1 = p2y(d.a.p);
@@ -1057,7 +1201,13 @@ function ChartLW(props) {
         </svg>
 
         {/* Drawing toolbar */}
-        <div className="draw-toolbar" onMouseDown={(e) => e.stopPropagation()}>
+        <div
+          className="draw-toolbar"
+          style={toolbarPos ? { left: toolbarPos.x, top: toolbarPos.y, bottom: 'auto' } : {}}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="draw-toolbar-grip" onMouseDown={onToolbarDragStart} title="Drag to move"><DrawIcons.grip /></div>
+          <div className="sep" />
           {[['cursor','Cursor'],['line','Trend line'],['hline','Horizontal'],['box','Rectangle'],['long','Long position'],['short','Short position'],['text','Text note']].map(([k, title]) => {
             const Ico = DrawIcons[k];
             return (
@@ -1090,94 +1240,18 @@ function ChartLW(props) {
               <span className="vol">Δ <b style={{color:lastBar.delta>=0?C.buy:C.sell}}>{lastBar.delta>=0?'+':''}{lastBar.delta}</b></span>
             </div>
           )}
+          {(showAbsorption || showStackedImb || showUFAMarks) && (
+            <div className="fp-legend-overlay">
+              <span className="chip imb"><span className="sw" /> Imb{fps ? ` ≥${fps.thr.toFixed(1)}×` : ''}</span>
+              <span className="chip imbs"><span className="sw" /> Stacked</span>
+              <span className="chip abs"><span className="sw" /> Absorp</span>
+              <span className="chip unf"><span className="sw" /> Unfin</span>
+            </div>
+          )}
         </div>
 
       </div>
 
-      {/* VP strip below chart */}
-      {showVP && (() => {
-        const VP_H = 48;
-        const stripW = xPxRight;
-
-        // Session VP — horizontal histogram by price
-        const sessionContent = vp.rows.length > 0 && (() => {
-          const prices = vp.rows.map(r => r.px);
-          const pxMin = Math.min(...prices);
-          const pxMax = Math.max(...prices);
-          const pxRange = pxMax - pxMin || 1;
-          const barW = Math.max(1, (stripW / vp.rows.length) * 0.85);
-          const px2x = (px) => ((px - pxMin) / pxRange) * (stripW - barW);
-          return (
-            <>
-              {vp.rows.map((r, i) => {
-                const total = r.buy + r.sell;
-                const x = px2x(r.px);
-                const h = (total / vpMax) * (VP_H - 4);
-                const buyH = total > 0 ? (r.buy / total) * h : 0;
-                const sellH = h - buyH;
-                const op = r.poc ? 0.85 : 0.5;
-                return (
-                  <g key={'vps'+i}>
-                    <rect x={x} y={VP_H - h} width={barW} height={sellH} fill={C.sell} opacity={op} />
-                    <rect x={x} y={VP_H - buyH} width={barW} height={buyH} fill={C.buy} opacity={op} />
-                    {r.poc && <line x1={x} x2={x+barW} y1={VP_H - h - 1} y2={VP_H - h - 1} stroke={C.fg1} strokeWidth="1.5" />}
-                  </g>
-                );
-              })}
-              <text x={4} y={VP_H - 4} fontSize="7.5" fill={C.fg} fontFamily="JetBrains Mono" opacity="0.35">{Math.min(...vp.rows.map(r=>r.px)).toFixed(2)}</text>
-              <text x={stripW - 4} y={VP_H - 4} fontSize="7.5" fill={C.fg} fontFamily="JetBrains Mono" opacity="0.35" textAnchor="end">{Math.max(...vp.rows.map(r=>r.px)).toFixed(2)}</text>
-            </>
-          );
-        })();
-
-        // Orderflow VP — per-bar volume columns aligned with chart time axis
-        const ofContent = candles.length > 0 && chartRef.current && (() => {
-          const volMax = Math.max(1, ...candles.map(c => c.vol));
-          return candles.map((c, i) => {
-            const xc = t2x(c.time);
-            if (xc == null) return null;
-            const bw = Math.max(2, barSpacing * 0.7);
-            const h = (c.vol / volMax) * (VP_H - 4);
-            const buyPct = c.vol > 0 ? c.ask / (c.ask + c.bid || 1) : 0.5;
-            const buyH = h * buyPct;
-            const sellH = h - buyH;
-            return (
-              <g key={'ofv'+i}>
-                <rect x={xc - bw/2} y={VP_H - h} width={bw} height={sellH} fill={C.sell} opacity="0.55" />
-                <rect x={xc - bw/2} y={VP_H - buyH} width={bw} height={buyH} fill={C.buy} opacity="0.55" />
-              </g>
-            );
-          });
-        })();
-
-        return (
-          <div className="vp-strip" style={{ height: VP_H, flexShrink:0, position:'relative', borderTop:'1px solid '+C.line, background: C.bg }}>
-            <div className="vp-strip-tabs" style={{
-              position:'absolute', top:2, left:4, display:'flex', gap:1, zIndex:2,
-              background: C.panel, borderRadius:3, padding:1,
-              fontFamily:'JetBrains Mono', fontSize:'8px', textTransform:'uppercase', letterSpacing:'0.05em',
-            }}>
-              <button
-                onClick={()=>setVpStripMode('session')}
-                style={{ all:'unset', cursor:'pointer', padding:'2px 5px', borderRadius:2,
-                  background: vpStripMode==='session' ? C.line : 'transparent',
-                  color: vpStripMode==='session' ? C.fg1 : C.fg+'80',
-                }}
-              >Session</button>
-              <button
-                onClick={()=>setVpStripMode('orderflow')}
-                style={{ all:'unset', cursor:'pointer', padding:'2px 5px', borderRadius:2,
-                  background: vpStripMode==='orderflow' ? C.line : 'transparent',
-                  color: vpStripMode==='orderflow' ? C.fg1 : C.fg+'80',
-                }}
-              >Orderflow</button>
-            </div>
-            <svg width={W} height={VP_H} style={{ display:'block' }}>
-              {vpStripMode === 'session' ? sessionContent : ofContent}
-            </svg>
-          </div>
-        );
-      })()}
 
     </div>
   );

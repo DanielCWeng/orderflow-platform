@@ -284,6 +284,7 @@
       if (size >= LARGE_TRADE_MIN) {
         largeTrades.unshift({
           time: timeStr,
+          barTime: currentBar ? currentBar.time : null,
           sym: 'ESH6',
           type: size >= 200 ? 'BLOCK' : 'SWEEP',
           side: side === 'ask' ? 'buy' : 'sell',
@@ -336,7 +337,7 @@
       bid: 0, ask: 0, delta: 0,
       footprint: [],
       deltaIntensity: 0, stackedImb: [],
-      absorption: false, unfinishedHi: false, unfinishedLo: false,
+      absorption: false, exhaustion: false, unfinishedHi: false, unfinishedLo: false,
     };
   }
 
@@ -379,31 +380,69 @@
 
     candles.forEach(c => {
       c.deltaIntensity = Math.abs(c.delta) / maxAbsDelta;
-      c.footprint.forEach(f => {
-        f.askImb = f.ask / Math.max(1, f.bid) >= thr;
-        f.bidImb = f.bid / Math.max(1, f.ask) >= thr;
+      // Diagonal imbalance: compare aggressive side against passive resistance one tick away
+      c.footprint.forEach((f, i) => {
+        const up = c.footprint[i + 1];
+        const dn = c.footprint[i - 1];
+        f.askImb = up ? f.ask / Math.max(1, up.bid) >= thr : false;
+        f.bidImb = dn ? f.bid / Math.max(1, dn.ask) >= thr : false;
       });
+      const fp = c.footprint;
       const stacks = [];
       let dir = null, start = 0;
-      for (let i = 0; i < c.footprint.length; i++) {
-        const f = c.footprint[i];
+      for (let i = 0; i < fp.length; i++) {
+        const f = fp[i];
         const cur = f.askImb ? 'ask' : (f.bidImb ? 'bid' : null);
         if (cur !== dir) {
-          if (dir && (i - start) >= 3) stacks.push({ dir, from: start, to: i - 1 });
+          if (dir && (i - start) >= 3) {
+            const stackMid = (start + i - 1) / 2;
+            const pos      = stackMid / fp.length; // 0 = bottom, 1 = top
+            const highConv = (dir === 'ask' && pos >= 0.67) || (dir === 'bid' && pos <= 0.33);
+            stacks.push({ dir, from: start, to: i - 1, pos, highConv });
+          }
           dir = cur; start = i;
         }
       }
-      if (dir && (c.footprint.length - start) >= 3) stacks.push({ dir, from: start, to: c.footprint.length - 1 });
+      if (dir && (fp.length - start) >= 3) {
+        const stackMid = (start + fp.length - 1) / 2;
+        const pos      = stackMid / fp.length;
+        const highConv = (dir === 'ask' && pos >= 0.67) || (dir === 'bid' && pos <= 0.33);
+        stacks.push({ dir, from: start, to: fp.length - 1, pos, highConv });
+      }
       c.stackedImb = stacks;
-      const body  = Math.abs(c.c - c.o);
       const range = Math.max(TICK, c.h - c.l);
-      c.absorption = c.vol > volP75 && Math.abs(c.delta) > avgAbsDelta * 1.4 && body < range * 0.3;
+      const mid   = (c.h + c.l) / 2;
+      const strongDelta = Math.abs(c.delta) > avgAbsDelta * 1.4;
+      const highVol     = c.vol > volP75;
+
+      // Absorption: close opposes delta — passive limit orders absorbed the aggressor
+      // delta > 0 (net buying) but close in lower half → sellers absorbed buyers
+      // delta < 0 (net selling) but close in upper half → buyers absorbed sellers
+      const deltaDiv = (c.delta > 0 && c.c < mid) || (c.delta < 0 && c.c > mid);
+      c.absorption = highVol && strongDelta && deltaDiv;
+
+      // Exhaustion: close aligns with delta but volume thins at the extreme
+      // The aggressor simply ran out — no large passive party needed
+      const deltaAlign = (c.delta > 0 && c.c > c.o) || (c.delta < 0 && c.c < c.o);
+      let extremeThin = false;
+      if (c.footprint.length >= 4) {
+        if (c.delta > 0) {
+          // Upside: top 3 cells should have decreasing volume toward the high
+          const top = c.footprint.slice(-3);
+          extremeThin = top.slice(1).every((f, i) => (f.bid + f.ask) < (top[i].bid + top[i].ask));
+        } else if (c.delta < 0) {
+          // Downside: bottom 3 cells should have decreasing volume toward the low
+          const bot = c.footprint.slice(0, 3);
+          extremeThin = bot.slice(0, -1).every((f, i) => (f.bid + f.ask) < (bot[i + 1].bid + bot[i + 1].ask));
+        }
+      }
+      c.exhaustion = highVol && strongDelta && deltaAlign && extremeThin;
       const top = c.footprint[c.footprint.length - 1];
       const bot = c.footprint[0];
       const topT = top ? top.bid + top.ask : 0;
       const botT = bot ? bot.bid + bot.ask : 0;
-      c.unfinishedHi = topT > 0 && top.ask / topT > 0.9;
-      c.unfinishedLo = botT > 0 && bot.bid / botT > 0.9;
+      c.unfinishedHi = topT >= 8 && top.ask / topT > 0.9;
+      c.unfinishedLo = botT >= 8 && bot.bid / botT > 0.9;
     });
     window.OF_FOOTPRINT_STATS = { thr, mean, sigma, maxAbsDelta, avgAbsDelta };
   }
@@ -602,7 +641,9 @@
       const liveAccum = tradeAccum[currentBar.time] || {};
       const liveFootprint = Object.values(liveAccum).sort((a, b) => a.px - b.px);
       if (liveFootprint.length > 0) {
-        liveCurrentBar = { ...currentBar, footprint: liveFootprint };
+        let liveBid = 0, liveAsk = 0;
+        liveFootprint.forEach(f => { liveBid += f.bid; liveAsk += f.ask; });
+        liveCurrentBar = { ...currentBar, footprint: liveFootprint, bid: liveBid, ask: liveAsk, delta: liveAsk - liveBid };
       }
     }
     const allBars = liveCurrentBar ? [...bars, liveCurrentBar] : [...bars];

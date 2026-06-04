@@ -15,15 +15,15 @@
     --bg-3: #232a37;
     --line:  #232a37;
     --line-soft: #1c222d;
-    --fg-0:  #f3ecdb;
-    --fg-1:  #cbc4b3;
-    --fg-2:  #8a8675;
-    --fg-3:  #5b5a52;
-    --buy:   oklch(0.82 0.06 230);
-    --buy-d: oklch(0.62 0.07 230);
+    --fg-0:  #dde1e8;
+    --fg-1:  #b0b5c0;
+    --fg-2:  #737880;
+    --fg-3:  #484d58;
+    --buy:   oklch(0.74 0.18 230);
+    --buy-d: oklch(0.56 0.20 230);
     --buy-bg: color-mix(in oklab, var(--buy) 14%, transparent);
-    --sell:  oklch(0.78 0.08 30);
-    --sell-d:oklch(0.58 0.10 30);
+    --sell:  oklch(0.66 0.24 22);
+    --sell-d:oklch(0.50 0.26 22);
     --sell-bg: color-mix(in oklab, var(--sell) 14%, transparent);
     --accent: var(--fg-0);
     --row-h: 22px;
@@ -196,7 +196,7 @@
   .vp-legend span b { color: var(--fg-1); font-weight: 500; }
 
 
-  .delta-wrap { flex:1; padding: 8px 12px; position: relative; min-height: 0; }
+  .delta-wrap { flex:1; padding: 4px 8px 4px; position: relative; min-height: 0; display:flex; flex-direction:column; }
   .delta-stats { display:flex; gap: 18px; padding: 0 12px 4px; font-size: 10.5px; }
   .delta-stats .s { display:flex; gap:6px; align-items:baseline; }
   .delta-stats .k { color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9.5px; }
@@ -213,34 +213,38 @@
   .legend .vol { color: var(--fg-2); }
   .fp-legend { position:absolute; left: 14px; bottom: 8px; display:flex; gap: 12px; font-family:'JetBrains Mono',monospace; font-size: 10px; color: var(--fg-2); pointer-events: none; z-index: 5; }
   .fp-legend-inline { display:flex; gap: 8px; align-items:center; font-family:'JetBrains Mono',monospace; font-size: 9px; color: var(--fg-3); text-transform: none; letter-spacing: 0; }
+  .fp-legend-overlay { display:flex; gap: 12px; align-items:center; font-family:'JetBrains Mono',monospace; font-size: 11px; color: var(--fg-2); text-transform: none; letter-spacing: 0; margin-top: 4px; }
 
   .draw-toolbar {
-    position: absolute; left: 8px; top: 42px;
-    display: flex; flex-direction: column; gap: 1px;
+    position: absolute; left: 8px; bottom: 30px;
+    display: flex; flex-direction: row; align-items: center; gap: 1px;
     background: color-mix(in oklab, var(--bg-1) 92%, transparent);
     border: 1px solid var(--line); border-radius: 4px; padding: 3px; z-index: 6; backdrop-filter: blur(8px);
   }
+  .draw-toolbar-grip { display: flex; align-items: center; justify-content: center; width: 16px; height: 24px; cursor: grab; color: var(--fg-3); flex-shrink: 0; }
+  .draw-toolbar-grip:active { cursor: grabbing; }
+  .draw-toolbar-grip svg { width: 12px; height: 12px; }
   .draw-toolbar button { all: unset; cursor: pointer; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; color: var(--fg-2); border-radius: 3px; transition: background 0.1s, color 0.1s; }
   .draw-toolbar button:hover { background: var(--bg-2); color: var(--fg-0); }
   .draw-toolbar button.active { background: var(--bg-3); color: var(--buy); }
   .draw-toolbar button svg { width: 13px; height: 13px; }
-  .draw-toolbar .sep { height: 1px; background: var(--line); margin: 2px 4px; }
+  .draw-toolbar .sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; flex-shrink: 0; }
   .draw-toolbar button.danger:hover { color: var(--sell); }
   .draw-toolbar button[disabled] { opacity: 0.35; cursor: default; }
   .draw-status {
-    position: absolute; left: 44px; top: 42px;
+    position: absolute; left: 8px; bottom: 58px;
     background: color-mix(in oklab, var(--bg-1) 92%, transparent);
     border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px;
     font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--fg-2); z-index: 6; pointer-events: none;
   }
   .draw-status b { color: var(--fg-0); font-weight: 500; }
 
-  .fp-legend .chip, .fp-legend-inline .chip { display:flex; align-items:center; gap: 4px; }
-  .fp-legend .chip .sw, .fp-legend-inline .chip .sw { width: 7px; height: 7px; border-radius: 2px; display:inline-block; }
-  .fp-legend .chip.imb .sw, .fp-legend-inline .chip.imb .sw { background: var(--buy); }
-  .fp-legend .chip.imbs .sw, .fp-legend-inline .chip.imbs .sw { border: 1px solid var(--buy); background: transparent; }
-  .fp-legend .chip.abs .sw, .fp-legend-inline .chip.abs .sw { background: var(--fg-0); }
-  .fp-legend .chip.unf .sw, .fp-legend-inline .chip.unf .sw { background: transparent; border: 1px dashed var(--sell); }
+  .fp-legend .chip, .fp-legend-inline .chip, .fp-legend-overlay .chip { display:flex; align-items:center; gap: 4px; }
+  .fp-legend .chip .sw, .fp-legend-inline .chip .sw, .fp-legend-overlay .chip .sw { width: 8px; height: 8px; border-radius: 2px; display:inline-block; }
+  .fp-legend .chip.imb .sw, .fp-legend-inline .chip.imb .sw, .fp-legend-overlay .chip.imb .sw { background: var(--buy); }
+  .fp-legend .chip.imbs .sw, .fp-legend-inline .chip.imbs .sw, .fp-legend-overlay .chip.imbs .sw { border: 1px solid var(--buy); background: transparent; }
+  .fp-legend .chip.abs .sw, .fp-legend-inline .chip.abs .sw, .fp-legend-overlay .chip.abs .sw { background: var(--fg-0); }
+  .fp-legend .chip.unf .sw, .fp-legend-inline .chip.unf .sw, .fp-legend-overlay .chip.unf .sw { background: transparent; border: 1px dashed var(--sell); }
 
   .chart-toolbar {
     position:absolute; top: 6px; right: 12px;
@@ -250,6 +254,21 @@
   .chart-toolbar button { all:unset; cursor:pointer; padding: 3px 7px; font-size: 9.5px; color: var(--fg-2); border-radius: 2px; text-transform: uppercase; letter-spacing: 0.08em; }
   .chart-toolbar button.active { background: var(--bg-3); color: var(--fg-0); }
   .chart-toolbar button.toggle.on { background: color-mix(in oklab, var(--buy) 18%, var(--bg-2)); color: var(--buy); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--buy) 30%, transparent); }
+  .overlay-menu-wrap { position: relative; }
+  .overlay-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 200;
+    background: var(--bg-1); border: 1px solid var(--line); border-radius: 4px;
+    padding: 6px 0; min-width: 150px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .overlay-menu-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 12px; cursor: pointer; font-size: 10px;
+    color: var(--fg-1); text-transform: uppercase; letter-spacing: 0.07em;
+    white-space: nowrap; user-select: none;
+  }
+  .overlay-menu-row:hover { background: var(--bg-2); }
+  .overlay-menu-row input[type=checkbox] { accent-color: var(--buy); cursor: pointer; margin: 0; }
+  .overlay-menu-sep { height: 1px; background: var(--line); margin: 4px 0; }
 
   .tape-stats { padding: 8px 12px 6px; border-bottom: 1px solid var(--line); display:flex; flex-direction:column; gap: 8px; flex-shrink: 0; }
   .tape-stats .row { display:flex; align-items:center; gap: 8px; }

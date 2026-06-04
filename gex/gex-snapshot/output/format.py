@@ -24,7 +24,8 @@ def _print_instrument(name: str, levels: dict, spot: float | None):
     print(f"\n{name}")
     print(f"  Call Wall:           {_fmt(levels.get('call_wall'))}")
     print(f"  Put Wall:            {_fmt(levels.get('put_wall'))}")
-    print(f"  Zero Gamma:          {_fmt(levels.get('zero_gamma'))}")
+    print(f"  Zero Gamma (flip):   {_fmt(levels.get('zero_gamma'))}")
+    print(f"  Zero Gamma (cum):    {_fmt(levels.get('zero_gamma_cumulative'))}")
     print(f"  Vol Trigger:         {_fmt(levels.get('volatility_trigger'))}")
 
     lg = levels.get("large_gamma", [])
@@ -33,6 +34,22 @@ def _print_instrument(name: str, levels: dict, spot: float | None):
         print(f"  Large Gamma 1-{len(lg)}:     {lg_str}")
     else:
         print("  Large Gamma:         N/A")
+
+    vanna = levels.get("vanna", {})
+    if vanna:
+        dtes = vanna.get("dtes", [])
+        dte_str = f"  [{', '.join(f'{d:.0f}DTE' for d in dtes)}]" if dtes else ""
+        print(f"  Vanna Flip:{dte_str:<20} {_fmt(vanna.get('flip'))}")
+        top_v = vanna.get("top", [])
+        if top_v:
+            print(f"  Top Vanna:           {' / '.join(_fmt(s) for s in top_v)}")
+
+    charm = levels.get("charm", {})
+    if charm:
+        print(f"  Charm Flip:          {_fmt(charm.get('flip'))}")
+        top_c = charm.get("top", [])
+        if top_c:
+            print(f"  Top Charm:           {' / '.join(_fmt(s) for s in top_c)}")
 
     if spot is not None:
         print(f"  Spot:                {_fmt(spot, 2)}")
@@ -77,24 +94,32 @@ def print_snapshot(result: dict):
     print()
 
 
-def save_levels_json(result: dict, output_path: str):
+def save_levels_json(result: dict, output_path: str, strike_gex_all: dict | None = None):
     """
     Write a flat levels array to a fixed-path JSON file for the chart frontend.
     This file is replaced daily and read by chartlwc.js to render GEX lines.
     """
     COLORS = {
-        "call_wall":          "#3fb950",
-        "put_wall":           "#f85149",
-        "zero_gamma":         "#d29922",
-        "volatility_trigger": "#8957e5",
-        "large_gamma":        "#6e7681",
+        "call_wall":            "#3fb950",
+        "put_wall":             "#f85149",
+        "zero_gamma":           "#d29922",
+        "zero_gamma_cumulative": "#a37c1a",
+        "volatility_trigger":   "#8957e5",
+        "large_gamma":          "#6e7681",
+        "vanna_flip":           "#58a6ff",
+        "top_vanna":            "#388bfd",
+        "charm_flip":           "#f0883e",
+        "top_charm":            "#d18616",
     }
     LABELS = {
-        "call_wall":          "Call Wall",
-        "put_wall":           "Put Wall",
-        "zero_gamma":         "Zero Gamma",
-        "volatility_trigger": "Vol Trigger",
+        "call_wall":            "Call Wall",
+        "put_wall":             "Put Wall",
+        "zero_gamma":           "Zero Gamma",
+        "zero_gamma_cumulative": "Zero Gamma (Cum)",
+        "volatility_trigger":   "Vol Trigger",
     }
+
+    spots = result.get("spot", {})
 
     levels = []
     for inst_key in ("nq", "qqq", "ndx"):
@@ -102,27 +127,82 @@ def save_levels_json(result: dict, output_path: str):
         if not inst_data:
             continue
         tag = inst_key.upper()
+        spot = spots.get(inst_key)
+
+        def lvl(name, px, color):
+            entry = {"name": name, "price": px, "color": color, "instrument": tag}
+            if spot is not None:
+                entry["spot"] = spot
+            return entry
+
+        # GEX levels
         for field, label in LABELS.items():
             px = inst_data.get(field)
             if px is not None:
-                levels.append({
-                    "name":       f"{tag} {label}",
-                    "price":      px,
-                    "color":      COLORS[field],
-                    "instrument": tag,
-                })
+                levels.append(lvl(f"{tag} {label}", px, COLORS[field]))
         for i, px in enumerate(inst_data.get("large_gamma", []), start=1):
-            levels.append({
-                "name":       f"{tag} GEX {i}",
-                "price":      px,
-                "color":      COLORS["large_gamma"],
-                "instrument": tag,
-            })
+            levels.append(lvl(f"{tag} GEX {i}", px, COLORS["large_gamma"]))
+
+        # Vanna levels
+        vanna = inst_data.get("vanna", {})
+        if vanna:
+            if vanna.get("flip") is not None:
+                levels.append(lvl(f"{tag} Vanna Flip", vanna["flip"], COLORS["vanna_flip"]))
+            for i, px in enumerate(vanna.get("top", []), start=1):
+                levels.append(lvl(f"{tag} Vanna {i}", px, COLORS["top_vanna"]))
+
+        # Charm levels
+        charm = inst_data.get("charm", {})
+        if charm:
+            if charm.get("flip") is not None:
+                levels.append(lvl(f"{tag} Charm Flip", charm["flip"], COLORS["charm_flip"]))
+            for i, px in enumerate(charm.get("top", []), start=1):
+                levels.append(lvl(f"{tag} Charm {i}", px, COLORS["top_charm"]))
+
+    # Combo / confluence levels
+    for combo in result.get("combo", []):
+        px = combo.get("strike")
+        if px is None:
+            continue
+        insts = combo.get("instruments", [])
+        inst_label = "+".join(insts)
+        rank = combo.get("rank", "")
+        name = f"Combo {rank} [{inst_label}]" if rank else f"Combo [{inst_label}]"
+        # Use the primary instrument's spot for proportional scaling on the chart
+        primary = insts[0] if insts else None
+        combo_spot = spots.get(primary.lower()) if primary else None
+        entry = {
+            "name":       name,
+            "price":      px,
+            "color":      "#c9a227",
+            "instrument": inst_label,
+            "is_combo":   True,
+        }
+        if combo_spot is not None:
+            entry["spot"] = combo_spot
+        levels.append(entry)
+
+    # Build per-strike GEX profile for chart sidebar rendering
+    profile = {}
+    if strike_gex_all:
+        spots = result.get("spot", {})
+        for inst_key in ("NQ", "QQQ", "NDX"):
+            gex_map = strike_gex_all.get(inst_key)
+            if not gex_map:
+                continue
+            spot = spots.get(inst_key.lower())
+            sorted_strikes = sorted(gex_map.keys())
+            profile[inst_key] = {
+                "spot": spot,
+                "strikes": [[k, round(gex_map[k], 0)] for k in sorted_strikes],
+            }
 
     payload = {
-        "date":         datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "generated_at": result.get("generated_at", ""),
-        "levels":       levels,
+        "date":           datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "generated_at":   result.get("generated_at", ""),
+        "levels":         levels,
+        "profile":        profile,
+        "market_context": result.get("market_context"),
     }
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

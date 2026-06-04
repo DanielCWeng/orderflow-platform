@@ -1,4 +1,4 @@
-"""Black-Scholes and Black-76 gamma computation with IV solver."""
+"""Black-Scholes and Black-76 greeks: gamma, vega, vanna, charm, IV solver."""
 
 import math
 import logging
@@ -58,6 +58,79 @@ def black76_gamma(F: float, K: float, T: float, r: float, sigma: float) -> float
     """Black-76 gamma for futures options (NQ)."""
     d1 = (math.log(F / K) + 0.5 * sigma**2 * T) / (sigma * math.sqrt(T))
     return math.exp(-r * T) * norm.pdf(d1) / (F * sigma * math.sqrt(T))
+
+
+# ---------------------------------------------------------------------------
+# Vega functions
+# ---------------------------------------------------------------------------
+
+def bs_vega(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-Scholes vega (dPrice/dSigma). Same for calls and puts."""
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    return S * norm.pdf(d1) * math.sqrt(T)
+
+
+def black76_vega(F: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-76 vega for futures options. Same for calls and puts."""
+    d1 = (math.log(F / K) + 0.5 * sigma**2 * T) / (sigma * math.sqrt(T))
+    return math.exp(-r * T) * F * norm.pdf(d1) * math.sqrt(T)
+
+
+# ---------------------------------------------------------------------------
+# Vanna functions  (dDelta/dSigma = dVega/dSpot)
+# ---------------------------------------------------------------------------
+
+def bs_vanna(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-Scholes vanna. Same for calls and puts; apply dealer sign externally."""
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return -norm.pdf(d1) * d2 / sigma
+
+
+def black76_vanna(F: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-76 vanna for futures options. Same for calls and puts."""
+    d1 = (math.log(F / K) + 0.5 * sigma**2 * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return -math.exp(-r * T) * norm.pdf(d1) * d2 / sigma
+
+
+# ---------------------------------------------------------------------------
+# Charm functions  (-dDelta/dT)
+# ---------------------------------------------------------------------------
+
+def bs_charm(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """
+    Black-Scholes charm (-dDelta/dT, per year).
+    Identical magnitude for calls and puts — apply dealer sign externally.
+    """
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return -norm.pdf(d1) * (2 * r * T - d2 * sigma * math.sqrt(T)) / (
+        2 * sigma * T * math.sqrt(T)
+    )
+
+
+def black76_charm(
+    F: float, K: float, T: float, r: float, sigma: float, option_type: str = "CALL"
+) -> float:
+    """
+    Black-76 charm (-dDelta/dT, per year).
+
+    Unlike BS, the discount factor means the call and put formulas differ by a
+    small r·N() term, so option_type is required.  The returned value is already
+    signed for dealer exposure (positive for calls, negative for puts).
+
+      Charm_call = e^(-rT) · [r·N(d1)  + N'(d1)·d2/(2T)]
+      Charm_put  = −e^(-rT) · [r·N(-d1) + N'(d1)·d2/(2T)]
+    """
+    d1 = (math.log(F / K) + 0.5 * sigma**2 * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    disc = math.exp(-r * T)
+    shared = norm.pdf(d1) * d2 / (2 * T)
+    if option_type == "CALL":
+        return disc * (r * norm.cdf(d1) + shared)
+    else:
+        return -disc * (r * norm.cdf(-d1) + shared)
 
 
 # ---------------------------------------------------------------------------

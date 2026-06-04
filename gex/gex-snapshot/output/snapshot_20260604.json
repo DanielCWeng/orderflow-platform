@@ -1,0 +1,347 @@
+{
+  "nq": null,
+  "qqq": {
+    "call_wall": 750.0,
+    "put_wall": 730.0,
+    "zero_gamma": 740.28,
+    "zero_gamma_cumulative": 774.2,
+    "volatility_trigger": 714.0,
+    "large_gamma": [
+      750.0,
+      745.0,
+      730.0,
+      755.0
+    ],
+    "vanna": {
+      "flip": null,
+      "top": [
+        720.0,
+        715.0,
+        695.0,
+        700.0
+      ],
+      "dtes": [
+        21.964965675474538
+      ]
+    },
+    "charm": {
+      "flip": null,
+      "top": [
+        730.0,
+        750.0,
+        725.0,
+        745.0
+      ],
+      "cumulative_sign": "negative",
+      "directional_bias": "dealers net losing delta from theta \u2014 overall bearish charm pressure",
+      "pin_description": "local pin gravity concentrated at 730, 750"
+    },
+    "regime": {
+      "gamma": "positive",
+      "above_vol_trigger": true,
+      "description": "positive gamma \u2014 dealers dampen moves | above vol trigger \u2014 vol suppression active"
+    },
+    "confluence": [
+      {
+        "strike": 730.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 1
+      },
+      {
+        "strike": 745.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 2
+      },
+      {
+        "strike": 750.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 3
+      }
+    ]
+  },
+  "ndx": {
+    "call_wall": 29200.0,
+    "put_wall": 27500.0,
+    "zero_gamma": 30425.68,
+    "zero_gamma_cumulative": 29188.58,
+    "volatility_trigger": 29725.0,
+    "large_gamma": [
+      29200.0,
+      30400.0,
+      30700.0,
+      30500.0
+    ],
+    "vanna": {
+      "flip": null,
+      "top": [
+        31600.0,
+        29700.0,
+        31000.0,
+        30000.0
+      ],
+      "dtes": [
+        17.964873476944444,
+        18.964873476863424,
+        19.964873476782408,
+        20.964873476712963,
+        21.964873476631947,
+        24.96487347653935
+      ]
+    },
+    "charm": {
+      "flip": null,
+      "top": [
+        29200.0,
+        30700.0,
+        27500.0,
+        29400.0
+      ],
+      "cumulative_sign": "negative",
+      "directional_bias": "dealers net losing delta from theta \u2014 overall bearish charm pressure",
+      "pin_description": "local pin gravity concentrated at 29200, 30700"
+    },
+    "regime": {
+      "gamma": "negative",
+      "above_vol_trigger": true,
+      "description": "negative gamma \u2014 dealers amplify moves | above vol trigger \u2014 vol suppression active"
+    },
+    "confluence": [
+      {
+        "strike": 29200.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 1
+      },
+      {
+        "strike": 30700.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 2
+      }
+    ]
+  },
+  "combo": [
+    {
+      "rank": 1,
+      "strike": 29200.0,
+      "instruments": [
+        "NDX"
+      ],
+      "score": 602690788.3368547,
+      "contributing_strikes": {
+        "NDX": 29200.0
+      },
+      "greeks": {
+        "NDX": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 2,
+      "strike": 750.0,
+      "instruments": [
+        "QQQ"
+      ],
+      "score": 450404812.940169,
+      "contributing_strikes": {
+        "QQQ": 750.0
+      },
+      "greeks": {
+        "QQQ": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 3,
+      "strike": 745.0,
+      "instruments": [
+        "QQQ"
+      ],
+      "score": 431941886.5402594,
+      "contributing_strikes": {
+        "QQQ": 745.0
+      },
+      "greeks": {
+        "QQQ": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 4,
+      "strike": 730.0,
+      "instruments": [
+        "QQQ"
+      ],
+      "score": 234257219.2941354,
+      "contributing_strikes": {
+        "QQQ": 730.0
+      },
+      "greeks": {
+        "QQQ": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 5,
+      "strike": 30700.0,
+      "instruments": [
+        "NDX"
+      ],
+      "score": 228485541.46720365,
+      "contributing_strikes": {
+        "NDX": 30700.0
+      },
+      "greeks": {
+        "NDX": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    }
+  ],
+  "spot": {
+    "qqq": 740.6099853515625,
+    "ndx": 30407.810546875
+  },
+  "market_context": {
+    "vix_curve": {
+      "levels": {
+        "vix9d": 12.65,
+        "vix": 15.4,
+        "vix3m": 19.23
+      },
+      "slope_3m": 3.83,
+      "structure": "contango",
+      "short_spread": 2.75,
+      "short_stress": false
+    },
+    "cross_asset": {
+      "day_chg_pct": {
+        "spy": 0.378,
+        "tlt": 0.223,
+        "gld": 0.834,
+        "dxy": -0.079,
+        "cl": -3.145
+      },
+      "signal": "mixed",
+      "signal_description": "SPY +0.38% TLT +0.22% GLD +0.83% DXY -0.08% CL -3.15% \u2014 no dominant pattern"
+    },
+    "cot_nq": {
+      "as_of": "2026-05-26",
+      "market": "NASDAQ MINI - CHICAGO MERCANTILE EXCHANGE",
+      "open_interest": 302990,
+      "lev_money_long": 52861,
+      "lev_money_short": 104540,
+      "lev_money_net": -51679,
+      "lev_money_net_chg": -6308,
+      "asset_mgr_long": 117374,
+      "asset_mgr_short": 32311,
+      "asset_mgr_net": 85063,
+      "asset_mgr_net_chg": -7238,
+      "dealer_net": -45022,
+      "pct_oi_lev_long": 17.4,
+      "pct_oi_lev_short": 34.5,
+      "pct_oi_am_long": 38.7,
+      "pct_oi_am_short": 10.7,
+      "stance": "bearish"
+    },
+    "put_call": {
+      "date": "2026-06-03",
+      "total_pc": 0.83,
+      "index_pc": 1.02,
+      "equity_pc": 0.49,
+      "spx_pc": 1.22,
+      "total_pc_5d_avg": 0.742,
+      "equity_pc_5d_avg": 0.434,
+      "index_pc_5d_avg": 0.984,
+      "sentiment": "neutral"
+    }
+  },
+  "qqq_weights": {
+    "refreshed_at": "2026-06-04T20:27:10Z",
+    "holdings": [
+      {
+        "ticker": "NVDA",
+        "name": "NVIDIA Corp",
+        "weight_pct": 8.152
+      },
+      {
+        "ticker": "AAPL",
+        "name": "Apple Inc",
+        "weight_pct": 7.279
+      },
+      {
+        "ticker": "MSFT",
+        "name": "Microsoft Corp",
+        "weight_pct": 5.312
+      },
+      {
+        "ticker": "MU",
+        "name": "Micron Technology Inc",
+        "weight_pct": 4.793
+      },
+      {
+        "ticker": "AMZN",
+        "name": "Amazon.com Inc",
+        "weight_pct": 4.616
+      },
+      {
+        "ticker": "AMD",
+        "name": "Advanced Micro Devices Inc",
+        "weight_pct": 3.69
+      },
+      {
+        "ticker": "GOOGL",
+        "name": "Alphabet Inc Class A",
+        "weight_pct": 3.518
+      },
+      {
+        "ticker": "TSLA",
+        "name": "Tesla Inc",
+        "weight_pct": 3.456
+      },
+      {
+        "ticker": "AVGO",
+        "name": "Broadcom Inc",
+        "weight_pct": 3.365
+      },
+      {
+        "ticker": "GOOG",
+        "name": "Alphabet Inc Class C",
+        "weight_pct": 3.253
+      }
+    ]
+  },
+  "generated_at": "2026-06-04T20:50:38Z"
+}

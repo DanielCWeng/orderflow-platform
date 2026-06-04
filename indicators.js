@@ -387,63 +387,171 @@ class DeepTrades {
 // ═══════════════════════════════════════════════════════════════════════════════
 class DeepWall {
   constructor(opts = {}) {
-    this.wallVolumeThreshold = opts.wallVolumeThreshold ?? 120;
-    this.wallTouchCount      = opts.wallTouchCount      ?? 3;
-    this.wallBreakTicks      = opts.wallBreakTicks      ?? 2;
-    this.domMinSize          = opts.domMinSize          ?? 150;
-    this.domSnapshots        = opts.domSnapshots        ?? 4;
+    this.minVisits        = opts.minVisits        ?? 3;
+    this.minVisitVol      = opts.minVisitVol      ?? 15;   // min contracts per visit to count
+    this.visitGapTicks    = opts.visitGapTicks    ?? 4;    // ticks away before a visit ends
+    this.minAvgAbsorption = opts.minAvgAbsorption ?? 10;   // min avg |deltaAbsorbed| per visit
+    this.domMinSize       = opts.domMinSize       ?? 150;
+    this.domSnapshots     = opts.domSnapshots     ?? 4;    // consecutive DOM snaps needed to gate
+    this.replenishRatio   = opts.replenishRatio   ?? 0.85; // DOM size held this fraction → replenishment
+    this.wallBreakTicks   = opts.wallBreakTicks   ?? 2;
+    this.staleBarCount    = opts.staleBarCount    ?? 10;   // bars without a visit → wall removed
 
-    // Per-level tracking: px → { vol, touches, domCount, side, alerted }
-    this._levels  = new Map();
-    this._domSnap = new Map();  // px → consecutive snapshot count with large size
-    this.walls    = [];         // active detected walls
-    this.signals  = [];
-    this.state    = { activeWalls: [] };
+    // px → { visits[], currentVisit|null, domSnaps, domVol, lastVisitBar, alerted }
+    this._levels   = new Map();
+    this._activePx = null;   // level where a visit is currently open
+    this._barCount = 0;
+    this.walls     = [];
+    this.signals   = [];
+    this.state     = { activeWalls: [] };
+  }
+
+  _getLevel(px) {
+    if (!this._levels.has(px)) {
+      this._levels.set(px, {
+        visits:       [],
+        currentVisit: null,
+        domSnaps:     0,
+        domVol:       0,
+        lastVisitBar: this._barCount,
+        alerted:      false,
+      });
+    }
+    return this._levels.get(px);
+  }
+
+  _openVisit(px) {
+    const lvl = this._getLevel(px);
+    lvl.currentVisit = { vol: 0, deltaAbsorbed: 0, domVolAtStart: lvl.domVol };
+    lvl.lastVisitBar = this._barCount;
+  }
+
+  _closeVisit(px) {
+    const lvl = this._levels.get(px);
+    if (!lvl?.currentVisit) return;
+    const v = lvl.currentVisit;
+    lvl.currentVisit = null;
+    if (v.vol < this.minVisitVol) return;   // too thin, discard
+    // Replenishment: DOM size held despite trades printing through
+    v.replenished = lvl.domVol >= v.domVolAtStart * this.replenishRatio && v.vol > 0;
+    lvl.visits.push(v);
+    if (!lvl.alerted) this._checkWall(px, lvl);
+  }
+
+  _checkWall(px, lvl) {
+    if (lvl.visits.length < this.minVisits) return;
+
+    // Average absorbed delta across completed visits
+    const avgAbsorption = lvl.visits.reduce((s, v) => s + Math.abs(v.deltaAbsorbed), 0) / lvl.visits.length;
+    if (avgAbsorption < this.minAvgAbsorption) return;
+
+    // DOM is a gate, not just cosmetic — need persistent book presence OR replenishment evidence
+    const domConfirmed    = lvl.domSnaps >= this.domSnapshots;
+    const replenishConfirmed = lvl.visits.some(v => v.replenished);
+    if (!domConfirmed && !replenishConfirmed) return;
+
+    const netDelta = lvl.visits.reduce((s, v) => s + v.deltaAbsorbed, 0);
+    lvl.alerted = true;
+    const wall = {
+      px,
+      side:              netDelta > 0 ? 'ASK' : 'BID',
+      totalVol:          lvl.visits.reduce((s, v) => s + v.vol, 0),
+      visitCount:        lvl.visits.length,
+      avgAbsorption,
+      domConfirmed,
+      replenishConfirmed,
+      barDetected:       this._barCount,
+    };
+    this.walls.push(wall);
+    this.state.activeWalls = [...this.walls];
+    this._emit('WALL_DETECTED', wall);
   }
 
   onTrade(trade) {
     const px = snap(trade.p);
-    const lvl = this._levels.get(px) ?? { vol: 0, touches: 0, side: trade.td, alerted: false };
-    lvl.vol    += trade.sz;
-    lvl.touches += 1;
-    lvl.side    = trade.td === 'BUY' ? 'ASK' : 'BID';  // BUY hits ask wall, SELL hits bid wall
-    this._levels.set(px, lvl);
 
-    if (!lvl.alerted && lvl.touches >= this.wallTouchCount && lvl.vol >= this.wallVolumeThreshold) {
-      const domCount = this._domSnap.get(px) ?? 0;
-      const domOk    = domCount >= this.domSnapshots;
-      lvl.alerted = true;
-      const wall = { px, side: lvl.side, totalVol: lvl.vol, touchCount: lvl.touches, domConfirmed: domOk };
-      this.walls.push(wall);
-      this.state.activeWalls = [...this.walls];
-      this._emit('WALL_DETECTED', wall);
+    // Close the active visit if price has moved far enough away
+    if (this._activePx !== null && Math.abs(px - this._activePx) / TICK >= this.visitGapTicks) {
+      this._closeVisit(this._activePx);
+      this._activePx = null;
+    }
+
+    // Open a new visit if none is active
+    if (this._activePx === null) {
+      this._activePx = px;
+      this._openVisit(px);
+    }
+
+    // Accumulate volume and absorbed delta into the active visit
+    const lvl = this._getLevel(this._activePx);
+    if (lvl.currentVisit) {
+      lvl.currentVisit.vol           += trade.sz;
+      lvl.currentVisit.deltaAbsorbed += (trade.td === 'BUY') ? trade.sz : -trade.sz;
     }
   }
 
   onDOM(bids, asks) {
-    // Track how many consecutive snapshots each level has maintained large size
-    const allLevels = [...bids, ...asks];
-    const largePrices = new Set();
-    for (const lvl of allLevels) {
-      if (lvl.sz >= this.domMinSize) largePrices.add(snap(lvl.p));
+    // Build a map of px → size for levels meeting the minimum size
+    const large = new Map();
+    for (const entry of [...bids, ...asks]) {
+      if (entry.sz >= this.domMinSize) large.set(snap(entry.p), entry.sz);
     }
-    // Increment snapshot count for large levels, reset for others
-    for (const [px, count] of this._domSnap) {
-      this._domSnap.set(px, largePrices.has(px) ? count + 1 : 0);
-    }
-    for (const px of largePrices) {
-      if (!this._domSnap.has(px)) this._domSnap.set(px, 1);
+    for (const [px, lvl] of this._levels) {
+      if (large.has(px)) {
+        lvl.domSnaps++;
+        lvl.domVol = large.get(px);
+      } else {
+        lvl.domSnaps = 0;
+        lvl.domVol   = 0;
+      }
     }
   }
 
   onBarClose(_bar, fp) {
-    const currentPx = fp.c;
-    // Check if any active walls have been broken
+    this._barCount++;
+
+    // Close any open visit at the bar boundary
+    if (this._activePx !== null) {
+      this._closeVisit(this._activePx);
+      this._activePx = null;
+    }
+
+    const px = fp.c;
+
+    // Remove walls that price has broken through
     this.walls = this.walls.filter(wall => {
-      const ticksThrough = (wall.side === 'ASK')
-        ? (currentPx - wall.px) / TICK    // price moved above ask wall
-        : (wall.px  - currentPx) / TICK;  // price moved below bid wall
-      if (ticksThrough >= this.wallBreakTicks) {
+      const ticks = wall.side === 'ASK'
+        ? (px - wall.px) / TICK
+        : (wall.px - px) / TICK;
+      if (ticks >= this.wallBreakTicks) {
+        this._emit('WALL_BROKEN', { px: wall.px, side: wall.side });
+        this._levels.delete(wall.px);
+        return false;
+      }
+      return true;
+    });
+
+    // Remove walls that haven't been revisited recently
+    this.walls = this.walls.filter(wall => {
+      const lvl = this._levels.get(wall.px);
+      if (!lvl) return false;
+      if (this._barCount - lvl.lastVisitBar > this.staleBarCount) {
+        this._emit('WALL_STALE', { px: wall.px });
+        return false;
+      }
+      return true;
+    });
+
+    this.state.activeWalls = [...this.walls];
+  }
+
+  onBarUpdate(_bar, fp) {
+    const px = fp.c;
+    this.walls = this.walls.filter(wall => {
+      const ticks = wall.side === 'ASK'
+        ? (px - wall.px) / TICK
+        : (wall.px - px) / TICK;
+      if (ticks >= this.wallBreakTicks) {
         this._emit('WALL_BROKEN', { px: wall.px, side: wall.side });
         this._levels.delete(wall.px);
         return false;
@@ -452,8 +560,6 @@ class DeepWall {
     });
     this.state.activeWalls = [...this.walls];
   }
-
-  onBarUpdate() {}
 
   _emit(type, data) {
     this.signals.push({ type, ts: Date.now(), data });
@@ -482,37 +588,43 @@ class UnfinishedAuction {
   }
 
   onBarClose(_bar, fp) {
+    // Resolve previously-open levels first (before adding new ones from this bar)
+    this._resolveAt(fp.h, fp.l);
+
     const highCell = fp.cells.get(fp.h);
     const lowCell  = fp.cells.get(fp.l);
 
-    // Unfinished HIGH: aggressive sellers (bid vol) present at the top tick
-    if (highCell && highCell.bidVol > 0) {
-      const level = {
-        type:    'HIGH',
-        px:      fp.h,
-        ts:      fp.t,
-        bidVol:  highCell.bidVol,
-        askVol:  highCell.askVol,
-      };
-      this.openLevels.push(level);
-      this._emit('UNFINISHED_HIGH', level);
+    // Unfinished HIGH: sellers dominated the top tick (≥60% bid vol, min 5 contracts)
+    if (highCell) {
+      const hiTotal = highCell.bidVol + highCell.askVol;
+      if (hiTotal >= 5 && highCell.bidVol / hiTotal >= 0.6) {
+        const level = {
+          type:    'HIGH',
+          px:      fp.h,
+          ts:      fp.t,
+          bidVol:  highCell.bidVol,
+          askVol:  highCell.askVol,
+        };
+        this.openLevels.push(level);
+        this._emit('UNFINISHED_HIGH', level);
+      }
     }
 
-    // Unfinished LOW: aggressive buyers (ask vol) present at the bottom tick
-    if (lowCell && lowCell.askVol > 0) {
-      const level = {
-        type:   'LOW',
-        px:     fp.l,
-        ts:     fp.t,
-        bidVol: lowCell.bidVol,
-        askVol: lowCell.askVol,
-      };
-      this.openLevels.push(level);
-      this._emit('UNFINISHED_LOW', level);
+    // Unfinished LOW: buyers dominated the bottom tick (≥60% ask vol, min 5 contracts)
+    if (lowCell) {
+      const loTotal = lowCell.bidVol + lowCell.askVol;
+      if (loTotal >= 5 && lowCell.askVol / loTotal >= 0.6) {
+        const level = {
+          type:   'LOW',
+          px:     fp.l,
+          ts:     fp.t,
+          bidVol: lowCell.bidVol,
+          askVol: lowCell.askVol,
+        };
+        this.openLevels.push(level);
+        this._emit('UNFINISHED_LOW', level);
+      }
     }
-
-    // Resolve levels that price has returned to
-    this._resolveAt(fp.h, fp.l);
   }
 
   onBarUpdate(_bar, fp) {

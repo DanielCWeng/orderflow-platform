@@ -5,8 +5,13 @@ function GexButton() {
   const run = async () => {
     setState('loading');
     try {
-      const r = await fetch('http://localhost:8000/gex/run', { method: 'POST' });
-      setState(r.ok ? 'ok' : 'err');
+      const r = await fetch('http://localhost:8001/gex/run', { method: 'POST' });
+      if (r.ok) {
+        setState('ok');
+        document.dispatchEvent(new CustomEvent('of-gex-update'));
+      } else {
+        setState('err');
+      }
     } catch { setState('err'); }
     setTimeout(() => setState('idle'), 3000);
   };
@@ -16,6 +21,28 @@ function GexButton() {
       {label}
     </button>
   );
+}
+
+// ===== prefs persistence =====
+const PREF_DEFAULTS = {
+  chartMode: 'bidask',
+  showDelta: true, showImb: true,
+  showDailyVP: true, showWeeklyVP: false, showVol: true,
+  showAbsorption: true, showExhaustion: true, showStackedImb: true,
+  showUFAMarks: true, showUFLines: true, showWalls: true,
+  showShiftCandle: true, showDivergence: true, showLargePrints: true,
+  showGex: true,
+  sidebarOpen: true,
+  deltaH: 190, scannerH: 47, domH: 300, signalsH: 140,
+};
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem('of-prefs');
+    return raw ? { ...PREF_DEFAULTS, ...JSON.parse(raw) } : { ...PREF_DEFAULTS };
+  } catch { return { ...PREF_DEFAULTS }; }
+}
+function savePrefs(p) {
+  try { localStorage.setItem('of-prefs', JSON.stringify(p)); } catch {}
 }
 
 // ===== drag helper =====
@@ -57,24 +84,47 @@ function App() {
 
   const [active, setActive] = useState('ES');
   const [tf, setTf] = useState('5m');
-  const [chartMode, setChartMode] = useState('bidask');
-  const [showDelta, setShowDelta] = useState(true);
-  const [showImb, setShowImb] = useState(true);
-  const [showVP, setShowVP] = useState(true);
-  const [showDailyVP, setShowDailyVP] = useState(true);
-  const [showWeeklyVP, setShowWeeklyVP] = useState(false);
-  const [showVol, setShowVol] = useState(true);
-  const [showMarkers, setShowMarkers] = useState(true);
-  const [showIndOverlays, setShowIndOverlays] = useState(true);
+  const _p = loadPrefs();
+  const [chartMode, setChartMode] = useState(_p.chartMode);
+  const [showDelta, setShowDelta] = useState(_p.showDelta);
+  const [showImb, setShowImb] = useState(_p.showImb);
+  const [showDailyVP, setShowDailyVP] = useState(_p.showDailyVP);
+  const [showWeeklyVP, setShowWeeklyVP] = useState(_p.showWeeklyVP);
+  const [showVol, setShowVol] = useState(_p.showVol);
+  const [showAbsorption,  setShowAbsorption]  = useState(_p.showAbsorption);
+  const [showExhaustion,  setShowExhaustion]  = useState(_p.showExhaustion);
+  const [showStackedImb,  setShowStackedImb]  = useState(_p.showStackedImb);
+  const [showUFAMarks,    setShowUFAMarks]    = useState(_p.showUFAMarks);
+  const [showUFLines,     setShowUFLines]     = useState(_p.showUFLines);
+  const [showWalls,       setShowWalls]       = useState(_p.showWalls);
+  const [showShiftCandle, setShowShiftCandle] = useState(_p.showShiftCandle);
+  const [showDivergence,  setShowDivergence]  = useState(_p.showDivergence);
+  const [showLargePrints, setShowLargePrints] = useState(_p.showLargePrints);
+  const [showGex, setShowGex] = useState(_p.showGex);
 
   // sidebar
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(_p.sidebarOpen);
 
   // resizable row heights (px) for the bottom panels in each col-stack
-  const [deltaH, setDeltaH] = useState(190);
-  const [scannerH, setScannerH] = useState(170);
-  const [domH, setDomH] = useState(300);
-  const [signalsH, setSignalsH] = useState(140);
+  const [deltaH, setDeltaH] = useState(_p.deltaH);
+  const [scannerH, setScannerH] = useState(_p.scannerH);
+  const [domH, setDomH] = useState(_p.domH);
+  const [signalsH, setSignalsH] = useState(_p.signalsH);
+  // persist prefs on every change
+  useEffect(() => {
+    savePrefs({
+      chartMode, showDelta, showImb, showDailyVP, showWeeklyVP, showVol,
+      showAbsorption, showExhaustion, showStackedImb, showUFAMarks, showUFLines,
+      showWalls, showShiftCandle, showDivergence, showLargePrints,
+      showGex,
+      sidebarOpen, deltaH, scannerH, domH, signalsH,
+    });
+  }, [chartMode, showDelta, showImb, showDailyVP, showWeeklyVP, showVol,
+      showAbsorption, showExhaustion, showStackedImb, showUFAMarks, showUFLines,
+      showWalls, showShiftCandle, showDivergence, showLargePrints,
+      showGex,
+      sidebarOpen, deltaH, scannerH, domH, signalsH]);
+
   // drag handlers
   const dragA1 = (e) => { // chart | delta
     const start = deltaH;
@@ -83,7 +133,7 @@ function App() {
   const dragA2 = (e) => { // delta | scanner
     const startD = deltaH, startS = scannerH;
     startVerticalDrag(e, (dy) => {
-      const newS = Math.max(80, Math.min(420, startS - dy));
+      const newS = Math.max(47, Math.min(420, startS - dy));
       const realDy = startS - newS;
       setScannerH(newS);
       setDeltaH(Math.max(90, Math.min(520, startD + realDy)));
@@ -196,12 +246,19 @@ function App() {
               mode={chartMode} setMode={setChartMode}
               showDelta={showDelta} setShowDelta={setShowDelta}
               showImb={showImb} setShowImb={setShowImb}
-              showVP={showVP} setShowVP={setShowVP}
               showDailyVP={showDailyVP} setShowDailyVP={setShowDailyVP}
               showWeeklyVP={showWeeklyVP} setShowWeeklyVP={setShowWeeklyVP}
               showVol={showVol} setShowVol={setShowVol}
-              showMarkers={showMarkers} setShowMarkers={setShowMarkers}
-              showIndOverlays={showIndOverlays} setShowIndOverlays={setShowIndOverlays}
+              showAbsorption={showAbsorption}   setShowAbsorption={setShowAbsorption}
+              showExhaustion={showExhaustion}   setShowExhaustion={setShowExhaustion}
+              showStackedImb={showStackedImb}   setShowStackedImb={setShowStackedImb}
+              showUFAMarks={showUFAMarks}       setShowUFAMarks={setShowUFAMarks}
+              showUFLines={showUFLines}         setShowUFLines={setShowUFLines}
+              showWalls={showWalls}             setShowWalls={setShowWalls}
+showShiftCandle={showShiftCandle} setShowShiftCandle={setShowShiftCandle}
+              showDivergence={showDivergence}   setShowDivergence={setShowDivergence}
+              showLargePrints={showLargePrints} setShowLargePrints={setShowLargePrints}
+              showGex={showGex} setShowGex={setShowGex}
             />
           </div>
           <div className="row-divider" onMouseDown={dragA1} title="Drag to resize" />

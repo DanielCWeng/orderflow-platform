@@ -1,0 +1,251 @@
+{
+  "nq": null,
+  "qqq": {
+    "call_wall": 750.0,
+    "put_wall": 715.0,
+    "zero_gamma": 757.84,
+    "volatility_trigger": 772.0,
+    "large_gamma": [
+      750.0,
+      745.0,
+      755.0,
+      760.0
+    ],
+    "vanna": {
+      "flip": null,
+      "top": [
+        695.0,
+        715.0,
+        700.0,
+        780.0
+      ],
+      "dtes": [
+        22.861798458634258
+      ]
+    },
+    "charm": {
+      "flip": null,
+      "top": [
+        570.0,
+        750.0,
+        753.0,
+        730.0
+      ],
+      "cumulative_sign": "negative",
+      "directional_bias": "dealers net losing delta from theta \u2014 overall bearish charm pressure",
+      "pin_description": "local pin gravity concentrated at 570, 750"
+    },
+    "regime": {
+      "gamma": "negative",
+      "above_vol_trigger": false,
+      "description": "negative gamma \u2014 dealers amplify moves | below vol trigger"
+    },
+    "confluence": [
+      {
+        "strike": 750.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 1
+      }
+    ]
+  },
+  "ndx": {
+    "call_wall": 30400.0,
+    "put_wall": 27500.0,
+    "zero_gamma": 29192.7,
+    "volatility_trigger": 29480.0,
+    "large_gamma": [
+      30400.0,
+      29200.0,
+      30600.0,
+      31000.0
+    ],
+    "vanna": {
+      "flip": null,
+      "top": [
+        29700.0,
+        31600.0,
+        29800.0,
+        30000.0
+      ],
+      "dtes": [
+        18.86168615226852,
+        19.861686152175924,
+        20.861686152071762,
+        21.861686151863427,
+        22.861686151770833
+      ]
+    },
+    "charm": {
+      "flip": null,
+      "top": [
+        30400.0,
+        29200.0,
+        26500.0,
+        31600.0
+      ],
+      "cumulative_sign": "negative",
+      "directional_bias": "dealers net losing delta from theta \u2014 overall bearish charm pressure",
+      "pin_description": "local pin gravity concentrated at 30400, 29200"
+    },
+    "regime": {
+      "gamma": "positive",
+      "above_vol_trigger": true,
+      "description": "positive gamma \u2014 dealers dampen moves | above vol trigger \u2014 vol suppression active"
+    },
+    "confluence": [
+      {
+        "strike": 29200.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 1
+      },
+      {
+        "strike": 30400.0,
+        "greeks": [
+          "charm",
+          "gex"
+        ],
+        "greek_count": 2,
+        "rank": 2
+      },
+      {
+        "strike": 31600.0,
+        "greeks": [
+          "charm",
+          "vanna"
+        ],
+        "greek_count": 2,
+        "rank": 3
+      }
+    ]
+  },
+  "combo": [
+    {
+      "rank": 1,
+      "strike": 30602.15,
+      "instruments": [
+        "NDX",
+        "QQQ"
+      ],
+      "score": 418175024.84,
+      "contributing_strikes": {
+        "NDX": 30600.0,
+        "QQQ": 745.0
+      },
+      "greeks": {
+        "NDX": [
+          "gex"
+        ],
+        "QQQ": [
+          "gex"
+        ]
+      }
+    },
+    {
+      "rank": 2,
+      "strike": 31008.85,
+      "instruments": [
+        "NDX",
+        "QQQ"
+      ],
+      "score": 386429245.65,
+      "contributing_strikes": {
+        "NDX": 31000.0,
+        "QQQ": 755.0
+      },
+      "greeks": {
+        "NDX": [
+          "gex"
+        ],
+        "QQQ": [
+          "charm",
+          "gex"
+        ]
+      }
+    },
+    {
+      "rank": 3,
+      "strike": 30400.0,
+      "instruments": [
+        "NDX"
+      ],
+      "score": 557245950.3896956,
+      "contributing_strikes": {
+        "NDX": 30400.0
+      },
+      "greeks": {
+        "NDX": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 4,
+      "strike": 29200.0,
+      "instruments": [
+        "NDX"
+      ],
+      "score": 543349095.3899269,
+      "contributing_strikes": {
+        "NDX": 29200.0
+      },
+      "greeks": {
+        "NDX": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 5,
+      "strike": 750.0,
+      "instruments": [
+        "QQQ"
+      ],
+      "score": 491776763.6124618,
+      "contributing_strikes": {
+        "QQQ": 750.0
+      },
+      "greeks": {
+        "QQQ": [
+          "charm",
+          "gex"
+        ]
+      },
+      "single_instrument": true
+    },
+    {
+      "rank": 6,
+      "strike": 31600.0,
+      "instruments": [
+        "NDX"
+      ],
+      "score": 63253775.87204931,
+      "contributing_strikes": {
+        "NDX": 31600.0
+      },
+      "greeks": {
+        "NDX": [
+          "charm",
+          "vanna"
+        ]
+      },
+      "single_instrument": true
+    }
+  ],
+  "spot": {
+    "qqq": 744.2100219726562,
+    "ndx": 30571.236328125
+  },
+  "generated_at": "2026-06-03T23:19:16Z"
+}

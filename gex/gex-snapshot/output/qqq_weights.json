@@ -1,0 +1,55 @@
+{
+  "refreshed_at": "2026-06-04T20:27:10Z",
+  "holdings": [
+    {
+      "ticker": "NVDA",
+      "name": "NVIDIA Corp",
+      "weight_pct": 8.152
+    },
+    {
+      "ticker": "AAPL",
+      "name": "Apple Inc",
+      "weight_pct": 7.279
+    },
+    {
+      "ticker": "MSFT",
+      "name": "Microsoft Corp",
+      "weight_pct": 5.312
+    },
+    {
+      "ticker": "MU",
+      "name": "Micron Technology Inc",
+      "weight_pct": 4.793
+    },
+    {
+      "ticker": "AMZN",
+      "name": "Amazon.com Inc",
+      "weight_pct": 4.616
+    },
+    {
+      "ticker": "AMD",
+      "name": "Advanced Micro Devices Inc",
+      "weight_pct": 3.69
+    },
+    {
+      "ticker": "GOOGL",
+      "name": "Alphabet Inc Class A",
+      "weight_pct": 3.518
+    },
+    {
+      "ticker": "TSLA",
+      "name": "Tesla Inc",
+      "weight_pct": 3.456
+    },
+    {
+      "ticker": "AVGO",
+      "name": "Broadcom Inc",
+      "weight_pct": 3.365
+    },
+    {
+      "ticker": "GOOG",
+      "name": "Alphabet Inc Class C",
+      "weight_pct": 3.253
+    }
+  ]
+}
