@@ -253,24 +253,28 @@ const safeMin = (arr, selector = x => x) => {
   async function subscribeInstrument(cfg, tok, sid) {
     const h = { Authorization: `Bearer ${tok}` };
     const sym = encodeURIComponent(cfg.symbol);
-    const results = await Promise.allSettled([
-      ibFetch(`/v2/market/quotes/subscribe/${sid}?symbols=${sym}`, { headers: h }),
-      ibFetch(`/v2/market/depths/subscribe/${sid}?symbols=${sym}`, { headers: h }),
-      ibFetch(`/v2/market/trades/subscribe/${sid}?symbols=${sym}`, { headers: h }),
-      ibFetch(`/v2/indicator/${sid}/timeBars/subscribe`, {
+    
+    try {
+      // 1. Basic market data (parallel is fine here)
+      await Promise.allSettled([
+        ibFetch(`/v2/market/quotes/subscribe/${sid}?symbols=${sym}`, { headers: h }),
+        ibFetch(`/v2/market/depths/subscribe/${sid}?symbols=${sym}`, { headers: h }),
+        ibFetch(`/v2/market/trades/subscribe/${sid}?symbols=${sym}`, { headers: h }),
+      ]);
+
+      // 2. Indicator data (sequential + smaller payload for stability)
+      // NQ is high-volatility; 2016 bars is too much. 150 bars is enough for the initial view.
+      await ibFetch(`/v2/indicator/${sid}/timeBars/subscribe`, {
         method: 'POST',
         headers: { ...h, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: cfg.symbol, period: 5, barType: 'MINUTE', loadSize: 500 }),
-      }),
-    ]);
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        const names = ['quotes', 'depths', 'trades', 'timebars'];
-        console.warn(`[OF] subscribe ${cfg.instrument} ${names[i]} failed:`, r.reason?.message);
-      }
-    });
-    if (results[3].status === 'rejected') {
-      throw new Error(`${cfg.instrument} timebars subscribe failed — chart will be empty`);
+        body: JSON.stringify({ symbol: cfg.symbol, period: 5, barType: 'MINUTE', loadSize: 150 }),
+      });
+      
+      console.log(`[OF] ${cfg.instrument} subscription successful`);
+    } catch (e) {
+      console.warn(`[OF] subscribe ${cfg.instrument} failed:`, e.message);
+      // Re-throw timebar failure specifically as it's critical for the chart
+      if (e.message.includes('timeBars')) throw e;
     }
   }
 

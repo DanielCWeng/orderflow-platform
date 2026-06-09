@@ -57,7 +57,7 @@ function createFootprintSeriesView() {
           if (y0 != null && y1 != null) { pxPerTick = Math.abs(y1 - y0); break; }
         }
 
-        const showFP = barSpacing >= 28 && pxPerTick >= 6;
+        const showFP = barSpacing >= 18 && pxPerTick >= 1.2;
 
         // --- Draw candles ---
         const candleW = showFP ? Math.max(3, barSpacing * 0.07) : Math.max(3, barSpacing * 0.6);
@@ -98,8 +98,8 @@ function createFootprintSeriesView() {
         const fpAreaW = barSpacing * 0.86 - candleColW;
         const gapW = Math.max(1, fpAreaW * 0.02);
         const colW = (fpAreaW - gapW) / 2;
-        if (colW < 3) return;
-        const showText = colW > 18 && cellH >= 12;
+        if (colW < 2.5) return;
+        const showText = colW > 18 && cellH >= 11;
 
         // Y-axis viewport cull margin
         const cullTop = -cellH;
