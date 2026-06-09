@@ -216,13 +216,20 @@ const safeMin = (arr, selector = x => x) => {
 
   // ── IronBeam REST helpers ─────────────────────────────────────────────────
   async function ibFetch(path, options = {}) {
-    const resp = await fetch(BASE_URL + path, options);
-    if (!resp.ok) {
-      let body = '';
-      try { body = await resp.text(); } catch {}
-      throw new Error(`IronBeam ${path} → HTTP ${resp.status}: ${body}`);
+    try {
+      const resp = await fetch(BASE_URL + path, options);
+      if (!resp.ok) {
+        let body = '';
+        try { body = await resp.text(); } catch {}
+        throw new Error(`IronBeam ${path} → HTTP ${resp.status}: ${body}`);
+      }
+      return resp.json();
+    } catch (e) {
+      if (e.message === 'Failed to fetch') {
+        throw new Error(`Network error (CORS or server down) fetching ${path}`);
+      }
+      throw e;
     }
-    return resp.json();
   }
 
   async function authenticate(username, password) {
@@ -253,7 +260,7 @@ const safeMin = (arr, selector = x => x) => {
       ibFetch(`/v2/indicator/${sid}/timeBars/subscribe`, {
         method: 'POST',
         headers: { ...h, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: cfg.symbol, period: 5, barType: 'MINUTE', loadSize: 2016 }),
+        body: JSON.stringify({ symbol: cfg.symbol, period: 5, barType: 'MINUTE', loadSize: 500 }),
       }),
     ]);
     results.forEach((r, i) => {
