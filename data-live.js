@@ -89,7 +89,13 @@ const safeMin = (arr, selector = x => x) => {
   for (const cfg of INSTRUMENT_CONFIGS) {
     const st = createState(cfg);
     instrStates.set(cfg.instrument, st);
+    // Register all plausible symbol formats IronBeam may use in WS messages:
+    // 'XCME:NQ.M26', 'NQ.M26', 'NQM26', 'NQ'
     instrBySym.set(cfg.symbol, cfg.instrument);
+    const noExch = cfg.symbol.replace(/^[^:]+:/, '');   // 'NQ.M26'
+    instrBySym.set(noExch, cfg.instrument);
+    instrBySym.set(noExch.replace('.', ''), cfg.instrument); // 'NQM26'
+    instrBySym.set(cfg.instrument, cfg.instrument);          // 'NQ'
   }
 
   // ── Shared watchlist (mutated in-place by updateWatchlistEntry) ───────────
@@ -142,14 +148,8 @@ const safeMin = (arr, selector = x => x) => {
     window.OF_INDICATORS    = st.indicators;
     document.dispatchEvent(new CustomEvent('of-data-update'));
 
-    // Subscribe WS feeds for new instrument if connected, then load its history
-    const cfg = st.cfg;
-    if (token && streamId) {
-      subscribeInstrument(cfg, token, streamId).catch(err => {
-        console.warn(`[OF] switch subscribe ${sym} failed:`, err.message);
-      });
-    }
-    // Load historical bars if this instrument hasn't been loaded yet
+    // Both instruments are always subscribed — no re-subscribe needed on switch.
+    // If history never loaded (e.g. backend was down at connect time), try again now.
     const existing = window.OF_DATA_BY_SYM[sym];
     if (!existing || !existing.candles || existing.candles.length === 0) {
       loadHistoricalBars(st).then(() => loadFootprintBars(st));
@@ -159,7 +159,14 @@ const safeMin = (arr, selector = x => x) => {
   // ── Routing helpers ───────────────────────────────────────────────────────
   function resolveInstr(sym) {
     if (!sym) return INSTRUMENT_CONFIGS[0].instrument;
-    return instrBySym.get(sym) || INSTRUMENT_CONFIGS[0].instrument;
+    const hit = instrBySym.get(sym);
+    if (hit) return hit;
+    // Last resort: symbol contains the instrument code (e.g. 'XCME:NQ-something')
+    const upper = sym.toUpperCase();
+    for (const cfg of INSTRUMENT_CONFIGS) {
+      if (upper.includes(cfg.instrument)) return cfg.instrument;
+    }
+    return INSTRUMENT_CONFIGS[0].instrument;
   }
 
   function groupItems(items, getSymbol) {
@@ -172,12 +179,14 @@ const safeMin = (arr, selector = x => x) => {
     return map;
   }
 
+  function sym(x) { return x.s || x.sym || x.symbol; }
+
   function filterMsgForInstr(msg, instr) {
     const out = {};
-    if (msg.q)  { const f = msg.q.filter(q => resolveInstr(q.s || q.sym)  === instr); if (f.length) out.q  = f; }
-    if (msg.d)  { const f = msg.d.filter(d => resolveInstr(d.s || d.sym)  === instr); if (f.length) out.d  = f; }
-    if (msg.tr) { const f = msg.tr.filter(t => resolveInstr(t.s || t.sym) === instr); if (f.length) out.tr = f; }
-    if (msg.ti) { const f = msg.ti.filter(b => resolveInstr(b.s || b.sym) === instr); if (f.length) out.ti = f; }
+    if (msg.q)  { const f = msg.q.filter(q => resolveInstr(sym(q)) === instr); if (f.length) out.q  = f; }
+    if (msg.d)  { const f = msg.d.filter(d => resolveInstr(sym(d)) === instr); if (f.length) out.d  = f; }
+    if (msg.tr) { const f = msg.tr.filter(t => resolveInstr(sym(t)) === instr); if (f.length) out.tr = f; }
+    if (msg.ti) { const f = msg.ti.filter(b => resolveInstr(sym(b)) === instr); if (f.length) out.ti = f; }
     return Object.keys(out).length ? out : null;
   }
 
@@ -186,6 +195,8 @@ const safeMin = (arr, selector = x => x) => {
   let streamId = null;
   let ws    = null;
   let reconnectAttempts = 0;
+  // Maps timebar subscription ID → instrument (e.g. "TimeBars_639..." → "NQ")
+  const tiSubIds = new Map();
 
   // ── Backend storage (fire-and-forget) ─────────────────────────────────────
   function pushToBackend(path, body) {
@@ -262,14 +273,22 @@ const safeMin = (arr, selector = x => x) => {
         ibFetch(`/v2/market/trades/subscribe/${sid}?symbols=${sym}`, { headers: h }),
       ]);
 
-      // 2. Indicator data (sequential + smaller payload for stability)
-      // NQ is high-volatility; 2016 bars is too much. 150 bars is enough for the initial view.
-      await ibFetch(`/v2/indicator/${sid}/timeBars/subscribe`, {
+      // 2. Timebars — capture subscription ID so WS messages can be routed to the right instrument.
+      // IronBeam timebar WS items have no symbol field; they carry the subscription ID in item.i instead.
+      const tiResp = await ibFetch(`/v2/indicator/${sid}/timeBars/subscribe`, {
         method: 'POST',
         headers: { ...h, 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: cfg.symbol, period: 5, barType: 'MINUTE', loadSize: 150 }),
       });
-      
+      // Response may carry the subscription ID in different fields — try all known shapes
+      const tiSubId = tiResp?.indicatorId || tiResp?.i || tiResp?.subscriptionId || tiResp?.id;
+      if (tiSubId) {
+        tiSubIds.set(tiSubId, cfg.instrument);
+        console.log(`[OF] ${cfg.instrument} timebar subId: ${tiSubId}`);
+      } else {
+        console.log(`[OF] ${cfg.instrument} timebar subscribe resp:`, JSON.stringify(tiResp));
+      }
+
       console.log(`[OF] ${cfg.instrument} subscription successful`);
     } catch (e) {
       console.warn(`[OF] subscribe ${cfg.instrument} failed:`, e.message);
@@ -279,9 +298,10 @@ const safeMin = (arr, selector = x => x) => {
   }
 
   async function subscribeAll(tok, sid) {
-    // Only subscribe the active instrument — prevents cross-instrument data mixing
-    const cfg = INSTRUMENT_CONFIGS.find(c => c.instrument === _activeInstr) || INSTRUMENT_CONFIGS[0];
-    await subscribeInstrument(cfg, tok, sid);
+    // Subscribe all instruments in parallel so both ES and NQ always accumulate ticks
+    await Promise.allSettled(
+      INSTRUMENT_CONFIGS.map(cfg => subscribeInstrument(cfg, tok, sid))
+    );
   }
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
@@ -296,14 +316,25 @@ const safeMin = (arr, selector = x => x) => {
         console.error('[OF] subscribe error:', err);
         setConnStatus('Subscription failed', false);
       });
-      // Re-merge footprint after IronBeam's 2016-bar historical batch arrives
+      // Load history + footprint for all instruments; active one gets priority
       const activeSt = instrStates.get(_activeInstr);
-      setTimeout(() => { if (activeSt) loadFootprintBars(activeSt); }, 2500);
+      if (activeSt) loadHistoricalBars(activeSt).then(() => loadFootprintBars(activeSt));
+      for (const cfg of INSTRUMENT_CONFIGS) {
+        if (cfg.instrument === _activeInstr) continue;
+        const st = instrStates.get(cfg.instrument);
+        if (st) setTimeout(() => loadHistoricalBars(st).then(() => loadFootprintBars(st)), 1000); // slight delay so active loads first
+      }
     };
 
+    let _firstMsgLogged = false;
     ws.onmessage = (evt) => {
       let msg;
       try { msg = JSON.parse(evt.data); } catch { return; }
+      if (!_firstMsgLogged && msg.ti && msg.ti.length > 0) {
+        _firstMsgLogged = true;
+        const b = msg.ti[0];
+        console.log('[OF] first non-empty ti msg — msg-level keys:', Object.keys(msg), '| item keys:', Object.keys(b), '| item.s:', b.s, '| item.sym:', b.sym, '| item.symbol:', b.symbol, '| msg.s:', msg.s, '| msg.symbol:', msg.symbol, '| full item:', JSON.stringify(b));
+      }
       routeMessage(msg);
     };
 
@@ -324,7 +355,30 @@ const safeMin = (arr, selector = x => x) => {
         const sid = await createStream(tok);
         openWS(tok, sid);
       } catch (e) {
-        console.error('[OF] reconnect failed:', e);
+        if (e.message && e.message.includes('401')) {
+          // Token expired — re-authenticate with saved credentials
+          try {
+            const savedUser = localStorage.getItem('ib_user');
+            const savedPass = localStorage.getItem('ib_pass');
+            if (savedUser && savedPass) {
+              console.log('[OF] token expired — re-authenticating…');
+              setConnStatus('Re-authenticating…', false);
+              token = await authenticate(savedUser, savedPass);
+              const sid = await createStream(token);
+              openWS(token, sid);
+              return;
+            }
+          } catch (authErr) {
+            console.error('[OF] re-auth failed:', authErr);
+          }
+        }
+        // 5xx or network — server down, keep backing off
+        if (isServerError(e)) {
+          const delay = Math.min(60000, 1000 * Math.pow(2, reconnectAttempts));
+          setConnStatus(`IronBeam down — retry in ${Math.round(delay / 1000)}s`, false);
+        } else {
+          console.error('[OF] reconnect failed:', e);
+        }
         scheduleReconnect(tok);
       }
     }, delay);
@@ -335,7 +389,7 @@ const safeMin = (arr, selector = x => x) => {
     const dirtyStates = new Set();
 
     if (msg.q && msg.q.length) {
-      const grouped = groupItems(msg.q, q => q.s || q.sym);
+      const grouped = groupItems(msg.q, sym);
       for (const [instr, items] of grouped) {
         const st = instrStates.get(instr); if (!st) continue;
         handleQuotes(st, items);
@@ -343,7 +397,7 @@ const safeMin = (arr, selector = x => x) => {
       }
     }
     if (msg.d && msg.d.length) {
-      const grouped = groupItems(msg.d, d => d.s || d.sym);
+      const grouped = groupItems(msg.d, sym);
       for (const [instr, items] of grouped) {
         const st = instrStates.get(instr); if (!st) continue;
         handleDepth(st, items);
@@ -351,7 +405,7 @@ const safeMin = (arr, selector = x => x) => {
       }
     }
     if (msg.tr && msg.tr.length) {
-      const grouped = groupItems(msg.tr, t => t.s || t.sym);
+      const grouped = groupItems(msg.tr, sym);
       for (const [instr, items] of grouped) {
         const st = instrStates.get(instr); if (!st) continue;
         handleTrades(st, items);
@@ -359,8 +413,23 @@ const safeMin = (arr, selector = x => x) => {
       }
     }
     if (msg.ti && msg.ti.length) {
-      const grouped = groupItems(msg.ti, b => b.s || b.sym);
-      for (const [instr, items] of grouped) {
+      // IronBeam timebar items carry no symbol — route via subscription ID (item.i or msg.tb)
+      // falling back to message-level symbol, then per-item symbol, then default.
+      const msgSym = msg.s || msg.sym || msg.symbol;
+      const getBarInstr = (b) => {
+        const subId = b.i || msg.tb;
+        if (subId && tiSubIds.has(subId)) return tiSubIds.get(subId);
+        if (msgSym) return resolveInstr(msgSym);
+        return resolveInstr(sym(b));
+      };
+      // Group items by resolved instrument
+      const byInstr = new Map();
+      for (const b of msg.ti) {
+        const instr = getBarInstr(b);
+        if (!byInstr.has(instr)) byInstr.set(instr, []);
+        byInstr.get(instr).push(b);
+      }
+      for (const [instr, items] of byInstr) {
         const st = instrStates.get(instr); if (!st) continue;
         handleTimeBars(st, items);
         dirtyStates.add(st);
@@ -756,11 +825,18 @@ const safeMin = (arr, selector = x => x) => {
     return { rows: arr, vah: arr[lo].px, val: arr[hi].px, poc: arr[pocIdx].px, total };
   }
 
+  // CME session rolls at 17:00 ET. Shift +7h so that boundary falls on midnight ET,
+  // then use America/New_York for date extraction. This correctly assigns overnight bars
+  // (e.g. 23:00 ET Monday) to Tuesday's session rather than Monday.
+  function cmeSessionDateStr(barTimeS) {
+    return new Date((barTimeS + 7 * 3600) * 1000)
+      .toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // → YYYY-MM-DD
+  }
+
   function buildDailyVP(allBars, TICK) {
     const dayBuckets = new Map();
     allBars.forEach(bar => {
-      const d   = new Date(bar.time * 1000);
-      const key = d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+      const key = cmeSessionDateStr(bar.time);
       if (!dayBuckets.has(key)) dayBuckets.set(key, []);
       dayBuckets.get(key).push(bar);
     });
@@ -773,12 +849,14 @@ const safeMin = (arr, selector = x => x) => {
   function buildWeeklyVP(allBars, TICK) {
     const weekBuckets = new Map();
     allBars.forEach(bar => {
-      const d  = new Date(bar.time * 1000);
-      const ct = new Date(d.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-      const day = ct.getDay();
-      const diff = ct.getDate() - day + (day === 0 ? -6 : 1);
-      const mon = new Date(ct); mon.setDate(diff); mon.setHours(0, 0, 0, 0);
-      const key = mon.toISOString().slice(0, 10);
+      // Get the CME session date (YYYY-MM-DD) then find the Monday of that ISO week.
+      // Avoid the toLocaleString+new Date() timezone hack — parse en-CA date string directly.
+      const dateStr = cmeSessionDateStr(bar.time);
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const sessionUTC = Date.UTC(y, m - 1, d);
+      const dow = new Date(sessionUTC).getUTCDay(); // 0=Sun … 6=Sat
+      const monday = new Date(sessionUTC + (dow === 0 ? -6 : 1 - dow) * 86400000);
+      const key = monday.toISOString().slice(0, 10);
       if (!weekBuckets.has(key)) weekBuckets.set(key, []);
       weekBuckets.get(key).push(bar);
     });
@@ -898,8 +976,19 @@ const safeMin = (arr, selector = x => x) => {
       st._cachedTPO      = buildTPO(recentBars, TICK);
       st._cachedDelta    = buildDelta(allBars);
       st._expensiveRebuildNeeded = false;
-    } else if (liveCurrentBar && liveCurrentBar.footprint.length > 0) {
-      analyzeFootprint(st, allBars.length > 20 ? allBars.slice(-20) : allBars);
+    } else {
+      if (liveCurrentBar && liveCurrentBar.footprint.length > 0) {
+        analyzeFootprint(st, allBars.length > 20 ? allBars.slice(-20) : allBars);
+      }
+      // Patch the last delta entry in-place so the delta histogram shows live current bar delta
+      if (st._cachedDelta.length > 0 && liveCurrentBar) {
+        const last = st._cachedDelta[st._cachedDelta.length - 1];
+        const prevCum = st._cachedDelta.length > 1
+          ? st._cachedDelta[st._cachedDelta.length - 2].cum
+          : 0;
+        last.delta = liveCurrentBar.delta;
+        last.cum   = prevCum + liveCurrentBar.delta;
+      }
     }
 
     const domExec = {};
@@ -1035,11 +1124,13 @@ const safeMin = (arr, selector = x => x) => {
 
       st.bars = [...newBars, ...st.bars].sort((a, b) => a.time - b.time);
       st.bars.forEach((b, i) => { b.i = i; });
+      // currentBar.i must come after all historical bars; update it so allBars has no duplicate indices
+      if (st.currentBar !== null) st.currentBar.i = st.bars.length;
       st._expensiveRebuildNeeded = true;
       commitData(st);
       console.log(`[OF] ${st.cfg.instrument} historical: seeded ${newBars.length} bars from backend`);
     } catch (e) {
-      console.debug(`[OF] ${st.cfg.instrument} historical bars unavailable:`, e.message);
+      console.warn(`[OF] ${st.cfg.instrument} historical bars unavailable:`, e.message);
     } finally {
       st._isLoadingHistorical = false;
     }
@@ -1091,19 +1182,67 @@ const safeMin = (arr, selector = x => x) => {
         console.log(`[OF] ${st.cfg.instrument} footprint: restored ${merged} bars from backend`);
       }
     } catch (e) {
-      console.debug(`[OF] ${st.cfg.instrument} footprint restore unavailable:`, e.message);
+      console.warn(`[OF] ${st.cfg.instrument} footprint restore unavailable:`, e.message);
     }
   }
 
   window.OF_RELOAD_OHLCV = () => {
     const activeSt = instrStates.get(_activeInstr);
-    if (activeSt) loadHistoricalBars(activeSt);
+    if (activeSt) loadHistoricalBars(activeSt).then(() => loadFootprintBars(activeSt));
   };
 
+  // Reload OHLCV + footprint for every instrument (called after backfill succeeds)
+  function reloadAllHistory() {
+    const activeSt = instrStates.get(_activeInstr);
+    if (activeSt) loadHistoricalBars(activeSt).then(() => loadFootprintBars(activeSt));
+    for (const cfg of INSTRUMENT_CONFIGS) {
+      if (cfg.instrument === _activeInstr) continue;
+      const st = instrStates.get(cfg.instrument);
+      if (st) setTimeout(() => loadHistoricalBars(st).then(() => loadFootprintBars(st)), 500);
+    }
+  }
+
+  // ── Backend connect with retry ────────────────────────────────────────────
+  // Uses GET /health (not POST /connect — that's a test-only endpoint that starts
+  // a duplicate IronBeam connection and must not be called while the frontend is live).
+  let _backendConnectTimer = null;
+  function connectBackend(attempt = 0) {
+    clearTimeout(_backendConnectTimer);
+    fetch(`${BACKEND_URL}/health`)
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(() => {
+        console.log('[OF] orderflow backend reachable');
+        fetch(`${BACKEND_URL}/backfill/run`, { method: 'POST' })
+          .then(r => r.ok ? reloadAllHistory() : null)
+          .catch(() => {});
+      })
+      .catch(() => {
+        const delay = Math.min(60000, 5000 * Math.pow(2, attempt));
+        console.log(`[OF] orderflow backend not reachable — retrying in ${delay / 1000}s`);
+        _backendConnectTimer = setTimeout(() => connectBackend(attempt + 1), delay);
+      });
+  }
+
   // ── Public entry point (called by auth form) ──────────────────────────────
-  window.connectIronBeam = async function (username, password) {
+  let _connectRetryTimer = null;
+
+  function isServerError(err) {
+    // 5xx or network failure — transient, worth retrying
+    return /50[0-9]|network|failed to fetch/i.test(err.message || '');
+  }
+
+  function isBadCredentials(err) {
+    return /401|403|forbidden|unauthorized/i.test(err.message || '');
+  }
+
+  window.connectIronBeam = async function (username, password, attempt = 0) {
+    clearTimeout(_connectRetryTimer);
     const errEl = document.getElementById('auth-error');
-    if (errEl) errEl.textContent = 'Connecting…';
+    if (errEl) errEl.textContent = attempt === 0 ? 'Connecting…' : `IronBeam down — retrying… (${attempt})`;
+    setConnStatus(attempt === 0 ? 'Connecting…' : `IronBeam down — retry ${attempt}`, false);
     try {
       token = await authenticate(username, password);
       const sid = await createStream(token);
@@ -1113,32 +1252,38 @@ const safeMin = (arr, selector = x => x) => {
           localStorage.setItem('ib_user', username);
           localStorage.setItem('ib_pass', password);
         } catch (_) {}
-        fetch(`${BACKEND_URL}/connect`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
-        }).then(r => r.json()).then(d => {
-          console.log('[OF] orderflow backend connected:', d);
-        }).catch(() => {
-          console.log('[OF] orderflow backend not reachable — skipping');
-        });
+        connectBackend();
       }
       openWS(token, sid);
     } catch (err) {
       console.error('[OF] connect error:', err);
-      if (errEl) errEl.textContent = err.message || 'Connection failed — check credentials';
+
+      if (isBadCredentials(err)) {
+        // Wrong password — clear saved creds, show overlay, don't retry
+        try { localStorage.removeItem('ib_user'); localStorage.removeItem('ib_pass'); } catch (_) {}
+        if (errEl) errEl.textContent = 'Invalid credentials — please re-enter';
+        showOverlay('Invalid credentials — please re-enter');
+        setConnStatus('Auth failed', false);
+        return;
+      }
+
+      if (isServerError(err)) {
+        // IronBeam is down — retry with backoff (5s → 10s → 20s… cap 60s)
+        const delay = Math.min(60000, 5000 * Math.pow(2, attempt));
+        const secs = Math.round(delay / 1000);
+        if (errEl) errEl.textContent = `IronBeam down — retrying in ${secs}s`;
+        setConnStatus(`IronBeam down — retry in ${secs}s`, false);
+        _connectRetryTimer = setTimeout(() => window.connectIronBeam(username, password, attempt + 1), delay);
+        return;
+      }
+
+      // Unknown error — show it but don't auto-retry
+      if (errEl) errEl.textContent = err.message || 'Connection failed';
+      setConnStatus('Connection failed', false);
     }
   };
 
-  // Load historical OHLCV + restore session footprint for active instrument only
-  setTimeout(() => {
-    const activeSt = instrStates.get(_activeInstr);
-    if (activeSt) loadHistoricalBars(activeSt).then(() => loadFootprintBars(activeSt));
-    // Kick yfinance backfill to fill any OHLCV gaps, then reload bars into charts
-    fetch(`${BACKEND_URL}/backfill/run`, { method: 'POST' })
-      .then(r => r.ok ? window.OF_RELOAD_OHLCV?.() : null)
-      .catch(() => {});
-  }, 500);
+  // Historical bars are loaded in ws.onopen after connection is established
 
   // Mock mode: auto-connect silently
   if (MOCK) {

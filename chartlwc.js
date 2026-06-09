@@ -57,7 +57,7 @@ function createFootprintSeriesView() {
           if (y0 != null && y1 != null) { pxPerTick = Math.abs(y1 - y0); break; }
         }
 
-        const showFP = barSpacing >= 18 && pxPerTick >= 1.2;
+        const showFP = barSpacing >= 18 && pxPerTick > 0;
 
         // --- Draw candles ---
         const candleW = showFP ? Math.max(3, barSpacing * 0.07) : Math.max(3, barSpacing * 0.6);
@@ -91,15 +91,20 @@ function createFootprintSeriesView() {
 
         if (!showFP) return;
 
-        // --- Footprint cells (optimised) ---
-        const cellH = pxPerTick;
-        const tFont = 11;
+        // --- Footprint cells ---
+        // Cluster multiple tick rows into one display row so footprint is always
+        // visible regardless of price scale (handles NQ at ~21k vs ES at ~5.5k).
+        const MIN_ROW_PX  = 2;   // minimum pixel height per display row (color visible)
+        const MIN_TEXT_PX = 10;  // minimum pixel height to show text
+        const bucketTicks = Math.max(1, Math.ceil(MIN_ROW_PX / Math.max(pxPerTick, 0.0001)));
+        const cellH  = bucketTicks * pxPerTick;
+        const tFont  = 11;
         const candleColW = candleW + 3;
         const fpAreaW = barSpacing * 0.86 - candleColW;
         const gapW = Math.max(1, fpAreaW * 0.02);
         const colW = (fpAreaW - gapW) / 2;
         if (colW < 2.5) return;
-        const showText = colW > 18 && cellH >= 11;
+        const showText = colW > 18 && cellH >= MIN_TEXT_PX;
 
         // Y-axis viewport cull margin
         const cullTop = -cellH;
@@ -114,9 +119,30 @@ function createFootprintSeriesView() {
         const isProfile = mode === 'profile';
         const showDeltaText = showDelta && showText && !isBidAsk;
 
+        // Build a clustered view of fp[] → display rows, merging bucketTicks cells each.
+        // Returns array of {px, bid, ask, askImb, bidImb} at the bucket's centre price.
+        function buildDisplayFP(fp) {
+          if (bucketTicks === 1) return fp;
+          if (!fp.length) return fp;
+          const rows = [];
+          for (let i = 0; i < fp.length; i += bucketTicks) {
+            let bid = 0, ask = 0, askImb = false, bidImb = false;
+            const end = Math.min(i + bucketTicks, fp.length);
+            for (let j = i; j < end; j++) {
+              bid += fp[j].bid; ask += fp[j].ask;
+              if (fp[j].askImb) askImb = true;
+              if (fp[j].bidImb) bidImb = true;
+            }
+            const midIdx = i + Math.floor((end - i - 1) / 2);
+            rows.push({ px: fp[midIdx].px, bid, ask, askImb, bidImb });
+          }
+          return rows;
+        }
+
         for (const bar of bars) {
-          const fp = bar.originalData.footprint;
-          if (!fp || !fp.length) continue;
+          const rawFP = bar.originalData.footprint;
+          if (!rawFP || !rawFP.length) continue;
+          const fp = buildDisplayFP(rawFP);
 
           // Per-bar max — avoid spread operator on large arrays
           let barMax = 1, rowTotalMax = 1;
@@ -142,7 +168,7 @@ function createFootprintSeriesView() {
               const y = priceConverter(fp[i].px);
               if (y == null || y < cullTop || y > cullBot) continue;
               const yT = y - cellH / 2 + 0.5;
-              const boxH = cellH - 1;
+              const boxH = Math.max(1, cellH - 1);
               ctx.globalAlpha = 0.10 + Math.min(1, fp[i].bid * invBarMax) * 0.65;
               ctx.fillRect(bidX, yT, colW, boxH);
             }
@@ -151,7 +177,7 @@ function createFootprintSeriesView() {
               const y = priceConverter(fp[i].px);
               if (y == null || y < cullTop || y > cullBot) continue;
               const yT = y - cellH / 2 + 0.5;
-              const boxH = cellH - 1;
+              const boxH = Math.max(1, cellH - 1);
               ctx.globalAlpha = 0.10 + Math.min(1, fp[i].ask * invBarMax) * 0.65;
               ctx.fillRect(askX, yT, colW, boxH);
             }
@@ -164,7 +190,7 @@ function createFootprintSeriesView() {
                 const y = priceConverter(f.px);
                 if (y == null || y < cullTop || y > cullBot) continue;
                 const yT = y - cellH / 2 + 0.5;
-                const boxH = cellH - 1;
+                const boxH = Math.max(1, cellH - 1);
                 ctx.globalAlpha = 0.45;
                 if (f.askImb) { ctx.fillStyle = buyColor; ctx.fillRect(askX, yT, colW, boxH); }
                 if (f.bidImb) { ctx.fillStyle = sellColor; ctx.fillRect(bidX, yT, colW, boxH); }
@@ -176,7 +202,6 @@ function createFootprintSeriesView() {
               ctx.fillStyle = '#ffffff';
               ctx.globalAlpha = 1;
               if (showDelta) {
-                // Delta mode: single centered column with net delta per row
                 for (let i = 0; i < fp.length; i++) {
                   const f = fp[i];
                   const y = priceConverter(f.px);
@@ -204,12 +229,12 @@ function createFootprintSeriesView() {
               const y = priceConverter(f.px);
               if (y == null || y < cullTop || y > cullBot) continue;
               const yT = y - cellH / 2 + 0.5;
-              const boxH = cellH - 1;
+              const boxH = Math.max(1, cellH - 1);
               const dl = f.ask - f.bid;
               const rowTotal = f.bid + f.ask;
               const w = (rowTotal / rowTotalMax) * totalW;
               ctx.fillStyle = dl >= 0 ? buyColor : sellColor;
-              ctx.fillRect(xL, yT + 1, w, boxH - 1);
+              ctx.fillRect(xL, yT + 1, w, Math.max(1, boxH - 1));
             }
             ctx.globalAlpha = 1;
 
@@ -222,14 +247,13 @@ function createFootprintSeriesView() {
                 const y = priceConverter(f.px);
                 if (y == null || y < cullTop || y > cullBot) continue;
                 const yT = y - cellH / 2 + 0.5;
-                const boxH = cellH - 1;
+                const boxH = Math.max(1, cellH - 1);
                 ctx.fillStyle = f.askImb ? buyColor : sellColor;
                 ctx.fillRect(xL2, yT, totalW, boxH);
               }
               ctx.globalAlpha = 1;
             }
 
-            // Delta text
             if (showDeltaText) {
               ctx.fillStyle = '#ffffff';
               ctx.globalAlpha = 1;
