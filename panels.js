@@ -9,25 +9,6 @@ const fmtK = (n) => {
   return String(n);
 };
 
-const safeMax = (arr, selector = x => x) => {
-  if (!arr || !arr.length) return 0;
-  let max = -Infinity;
-  for (let i = 0; i < arr.length; i++) {
-    const v = selector(arr[i]);
-    if (v > max) max = v;
-  }
-  return max;
-};
-const safeMin = (arr, selector = x => x) => {
-  if (!arr || !arr.length) return 0;
-  let min = Infinity;
-  for (let i = 0; i < arr.length; i++) {
-    const v = selector(arr[i]);
-    if (v < min) min = v;
-  }
-  return min;
-};
-
 // ============== Sidebar (collapsible) ==============
 const IconChevronLeft = () => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

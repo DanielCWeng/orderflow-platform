@@ -1,24 +1,5 @@
 // ============== ChartLW — TradingView lightweight-charts ==============
 
-const safeMax = (arr, selector = x => x) => {
-  if (!arr || !arr.length) return 0;
-  let max = -Infinity;
-  for (let i = 0; i < arr.length; i++) {
-    const v = selector(arr[i]);
-    if (v > max) max = v;
-  }
-  return max;
-};
-const safeMin = (arr, selector = x => x) => {
-  if (!arr || !arr.length) return 0;
-  let min = Infinity;
-  for (let i = 0; i < arr.length; i++) {
-    const v = selector(arr[i]);
-    if (v < min) min = v;
-  }
-  return min;
-};
-
 const DrawIcons = {
   cursor: () => <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2l9.5 5.5-4 1 2.5 4.5-2 1-2.5-4.5-3 3z" /></svg>,
   line:   () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M3 13L13 3" /><circle cx="3" cy="13" r="1.3" fill="currentColor" /><circle cx="13" cy="3" r="1.3" fill="currentColor" /></svg>,
