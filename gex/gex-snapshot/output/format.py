@@ -72,6 +72,32 @@ def _print_instrument(name: str, levels: dict, spot: float | None):
         if top_c:
             print(f"  Top Charm:           {' / '.join(_fmt(s) for s in top_c)}")
 
+    # Max pain
+    mp = levels.get("max_pain", {})
+    if mp.get("strike") is not None:
+        print(f"  Max Pain:            {_fmt(mp['strike'])}  (exp {mp.get('expiry', '?')})")
+
+    # Vol skew — front expiry summary only
+    skew = levels.get("skew", {})
+    front_exp = skew.get("front")
+    if front_exp:
+        fe = skew["by_expiry"].get(front_exp, {})
+        atm = fe.get("atm_iv")
+        slope = fe.get("skew_slope")
+        wing = fe.get("wing_spread")
+        solved = fe.get("strikes_solved", 0)
+        dte = fe.get("dte")
+        parts = []
+        if atm is not None:
+            parts.append(f"ATM IV {atm*100:.1f}%")
+        if slope is not None:
+            direction = "put skew" if slope < 0 else "call skew"
+            parts.append(f"slope {slope:+.3f} ({direction})")
+        if wing is not None:
+            parts.append(f"wing spread {wing*100:+.1f}pp")
+        dte_label = f"{dte:.0f}DTE" if dte is not None else "?"
+        print(f"  Vol Skew [{dte_label}, {solved}str]:  {' | '.join(parts) if parts else 'N/A'}")
+
     if spot is not None:
         print(f"  Spot:                {_fmt(spot, 2)}")
 

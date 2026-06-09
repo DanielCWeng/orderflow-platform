@@ -64,11 +64,33 @@ def compute_contract_gex(
     """
     Compute GEX for a single contract.
 
-    Returns GEX value or None if IV can't be solved.
+    Returns GEX value or None if gamma can't be determined.
+
+    Gamma source priority:
+      1. contract["gamma"] — pre-computed by Barchart on the volatility-greeks
+         endpoint. Available even after hours when bid/ask are zero (e.g. NQ
+         futures options). Saves the IV solve entirely and gives full chain
+         coverage regardless of market session.
+      2. IV solve from bid/ask mid — fallback for equity options (QQQ/NDX)
+         where Barchart doesn't supply pre-computed greeks.
     """
     strike = contract["strike"]
     option_type = contract["option_type"]
     oi = contract["oi"]
+
+    # --- fast path: use Barchart's pre-computed gamma if present ---
+    # Barchart provides this on the volatility-greeks endpoint. It's based on
+    # their own IV model so it won't perfectly match our Black-76 solve, but
+    # the difference is negligible for GEX aggregation purposes.
+    precomputed_gamma = contract.get("gamma")
+    if precomputed_gamma is not None:
+        gamma = float(precomputed_gamma)
+        if math.isnan(gamma) or math.isinf(gamma) or gamma <= 0:
+            return None
+        sign = 1.0 if option_type == "CALL" else -1.0
+        return sign * gamma * oi * 100 * (spot ** 2) * 0.01
+
+    # --- slow path: solve IV from bid/ask mid, then compute gamma ---
     bid = contract["bid"]
     ask = contract["ask"]
 
@@ -93,9 +115,7 @@ def compute_contract_gex(
         return None
 
     sign = 1.0 if option_type == "CALL" else -1.0
-    gex = sign * gamma * oi * 100 * (spot ** 2) * 0.01
-
-    return gex
+    return sign * gamma * oi * 100 * (spot ** 2) * 0.01
 
 
 def _dte_from_contract(contract: dict) -> float | None:

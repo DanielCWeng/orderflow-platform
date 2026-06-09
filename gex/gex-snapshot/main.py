@@ -20,6 +20,8 @@ from data.qqq_weights import get_qqq_weights
 from data.cot import fetch_cot_nq
 from data.put_call import fetch_put_call
 from compute.gex import aggregate_gex, aggregate_vanna, aggregate_charm, dte_status
+from compute.max_pain import compute_max_pain
+from compute.skew import compute_vol_skew
 from levels.extract import extract_instrument_levels, extract_greek_levels, extract_confluence, detect_combos
 from output.format import print_snapshot, save_json, save_levels_json
 
@@ -61,6 +63,8 @@ def run():
     strike_gex_all = {}
     strike_vanna_all = {}
     strike_charm_all = {}
+    max_pain_all = {}
+    skew_all = {}
     instrument_levels = {}
     total_skipped_iv = 0
 
@@ -183,6 +187,12 @@ def run():
             "%s: %d strikes with charm, %d skipped", name, len(charm_map), skipped_c
         )
 
+        log.info("Computing max pain for %s...", name)
+        max_pain_all[name] = compute_max_pain(chain)
+
+        log.info("Computing vol skew for %s...", name)
+        skew_all[name] = compute_vol_skew(chain, spot, is_futures=is_futures)
+
     # -----------------------------------------------------------------------
     # 6. Extract levels
     # -----------------------------------------------------------------------
@@ -238,6 +248,14 @@ def run():
                 if top:
                     charm_levels["pin_description"] = f"local pin gravity concentrated at {', '.join(str(int(s)) for s in top[:2])}"
             levels["charm"] = charm_levels
+
+        # Max pain
+        if name in max_pain_all and max_pain_all[name]:
+            levels["max_pain"] = max_pain_all[name]
+
+        # Vol skew (may be empty for NQ after hours)
+        if name in skew_all and skew_all[name]:
+            levels["skew"] = skew_all[name]
 
         # Regime block
         if spot is not None:
