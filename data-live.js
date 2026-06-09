@@ -498,10 +498,13 @@ const safeMin = (arr, selector = x => x) => {
         console.log(`[OF] first ${st.cfg.instrument} trade (raw):`, JSON.stringify(t));
         st._firstTradeLogged = true;
       }
-      const td = t.td ?? t.s ?? t.side ?? 0;
+      const td = t.td ?? t.side ?? 0;  // t.s is the symbol field — don't use it for direction
       const isBuy  = td === 1 || td === 'BUY'  || td === 'B' || td === 'buy';
       const isSell = td === 2 || td === 'SELL' || td === 'S' || td === 'sell';
-      const side = isBuy ? 'ask' : (isSell ? 'bid' : 'bid');
+      // Unknown direction (td=0 or 'U') is skipped rather than defaulted to a side,
+      // because counting unknowns as sells would artificially pull delta negative.
+      const side = isBuy ? 'ask' : (isSell ? 'bid' : null);
+      if (!side) continue;
       const size = t.sz ?? 0;
       const px   = t.p  ?? 0;
       if (!px || !size) continue;
@@ -699,18 +702,30 @@ const safeMin = (arr, selector = x => x) => {
       const strongDelta = Math.abs(c.delta) > avgAbsDelta * 1.4;
       const highVol     = c.vol > volP75;
 
-      const deltaDiv   = (c.delta > 0 && c.c < mid) || (c.delta < 0 && c.c > mid);
-      c.absorption = highVol && strongDelta && deltaDiv;
+      // Absorption: delta fights price direction AND body is tight (price went nowhere despite volume).
+      // Spec: high vol + strong delta + close against delta + body < 35% of range.
+      const deltaDiv  = (c.delta > 0 && c.c < mid) || (c.delta < 0 && c.c > mid);
+      const tightBody = Math.abs(c.c - c.o) < range * 0.35;
+      c.absorption = highVol && strongDelta && deltaDiv && tightBody;
 
+      // Exhaustion: delta aligns with price + volume thins at the extreme.
+      // Use proportional slice (top/bottom 15% of levels, min 3) so tall bars aren't trivially flagged.
+      // Also require the extreme avg volume is genuinely below the bar's average (not just natural taper).
       const deltaAlign = (c.delta > 0 && c.c > c.o) || (c.delta < 0 && c.c < c.o);
       let extremeThin = false;
-      if (c.footprint.length >= 4) {
+      if (fp.length >= 6) {
+        const nEx = Math.max(3, Math.floor(fp.length * 0.15));
+        const barAvgVol = fp.reduce((s, f) => s + f.bid + f.ask, 0) / fp.length;
         if (c.delta > 0) {
-          const top = c.footprint.slice(-3);
-          extremeThin = top.slice(1).every((f, i) => (f.bid + f.ask) < (top[i].bid + top[i].ask));
+          const exTop = fp.slice(-nEx);
+          const topAvg = exTop.reduce((s, f) => s + f.bid + f.ask, 0) / exTop.length;
+          extremeThin = topAvg < barAvgVol * 0.45 &&
+            exTop.slice(1).every((f, i) => (f.bid + f.ask) <= (exTop[i].bid + exTop[i].ask));
         } else if (c.delta < 0) {
-          const bot = c.footprint.slice(0, 3);
-          extremeThin = bot.slice(0, -1).every((f, i) => (f.bid + f.ask) < (bot[i + 1].bid + bot[i + 1].ask));
+          const exBot = fp.slice(0, nEx);
+          const botAvg = exBot.reduce((s, f) => s + f.bid + f.ask, 0) / exBot.length;
+          extremeThin = botAvg < barAvgVol * 0.45 &&
+            exBot.slice(0, -1).every((f, i) => (f.bid + f.ask) <= (exBot[i + 1].bid + exBot[i + 1].ask));
         }
       }
       c.exhaustion = highVol && strongDelta && deltaAlign && extremeThin;
@@ -912,8 +927,13 @@ const safeMin = (arr, selector = x => x) => {
   }
 
   function buildDelta(allBars) {
+    // Restrict to today's CME session — bars further back have no tick data so their
+    // delta is 0, producing a misleading flat-then-spike appearance.
+    const todayKey = cmeSessionDateStr(Math.floor(Date.now() / 1000));
+    const bars = allBars.filter(b => cmeSessionDateStr(b.time) === todayKey);
+    const src   = bars.length > 0 ? bars : allBars; // fallback if session key mismatch
     let cum = 0;
-    return allBars.map((b, i) => { cum += b.delta; return { i, delta: b.delta, cum }; });
+    return src.map((b, i) => { cum += b.delta; return { i, delta: b.delta, cum }; });
   }
 
   function buildBidAskRatio(tape) {
