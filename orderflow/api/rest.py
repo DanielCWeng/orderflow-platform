@@ -35,11 +35,29 @@ from ..compute.delta import compute_cvd
 from ..compute.footprint import compute_footprint, footprint_to_dict
 from ..config import INSTRUMENTS
 
+from ..ingestion.session import classify
+from ..ingestion.contracts import contract_from_config
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 UTC = datetime.timezone.utc
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _epoch_ms_to_dt(ms: int) -> datetime.datetime:
+    """Convert epoch milliseconds to UTC datetime. Safe on Windows (no fromtimestamp)."""
+    return _EPOCH + datetime.timedelta(milliseconds=ms)
+
+
+def _epoch_s_to_dt(s: int) -> datetime.datetime:
+    """Convert epoch seconds to UTC datetime. Safe on Windows (no fromtimestamp).
+    Auto-detects milliseconds (>10 digits) and converts to seconds."""
+    if s > 9_999_999_999:
+        s = s // 1000
+    return _EPOCH + datetime.timedelta(seconds=s)
+
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
 
@@ -103,12 +121,94 @@ class ConnectRequest(BaseModel):
     password: str
 
 
+class IngestTicksRequest(BaseModel):
+    instrument: str
+    trades: list[dict]  # raw IronBeam tr format: [{p, sz, td, st}, ...]
+
+
+class IngestBarsRequest(BaseModel):
+    instrument: str
+    bars: list[dict]  # raw IronBeam ti format: [{t, o, h, l, c, v}, ...]
+
+
+@router.post("/ingest/ticks")
+async def ingest_ticks(
+    body: IngestTicksRequest,
+    tick_store=Depends(get_tick_store),
+) -> dict:
+    """Receive raw trade frames from the browser and write to DuckDB tick store."""
+    inst = _validate_instrument(body.instrument)
+    contract = contract_from_config(inst)
+    now_utc = datetime.datetime.now(UTC)
+    rows: list[dict] = []
+
+    for t in body.trades:
+        price = float(t.get("p", 0))
+        size  = int(t.get("sz", 0))
+        if not price or not size:
+            continue
+        td    = t.get("td", 0)
+        st_raw = int(t.get("st", now_utc.timestamp() * 1000))
+        st_ms  = st_raw if st_raw > 9_999_999_999 else st_raw * 1000  # normalise s → ms
+        ts     = _epoch_ms_to_dt(st_ms)
+        side  = "B" if (td == 1 or td == "BUY") else ("A" if (td == 2 or td == "SELL") else "U")
+        rows.append({
+            "instrument": inst,
+            "contract":   contract,
+            "timestamp":  ts,
+            "price":      price,
+            "size":       size,
+            "side":       side,
+            "session":    classify(ts),
+        })
+
+    if rows:
+        tick_store.insert_ticks(rows)
+
+    return {"written": len(rows)}
+
+
+@router.post("/ingest/bars")
+async def ingest_bars(
+    body: IngestBarsRequest,
+    ohlcv_store=Depends(get_ohlcv_store),
+) -> dict:
+    """Receive completed bar frames from the browser and write to DuckDB ohlcv store."""
+    inst = _validate_instrument(body.instrument)
+    contract = contract_from_config(inst)
+    written = 0
+
+    for bar in body.bars:
+        t_s = int(bar.get("t", 0))
+        if not t_s:
+            continue
+        ts = _epoch_s_to_dt(t_s)
+        ohlcv_store.upsert_bar({
+            "instrument": inst,
+            "contract":   contract,
+            "timestamp":  ts,
+            "open":       float(bar.get("o", 0)),
+            "high":       float(bar.get("h", 0)),
+            "low":        float(bar.get("l", 0)),
+            "close":      float(bar.get("c", 0)),
+            "volume":     int(bar.get("v", 0)),
+            "source":     "LIVE",
+            "session":    classify(ts),
+        })
+        written += 1
+
+    return {"written": written}
+
+
+# NOTE: /connect and the IronBeam client below are NOT part of the normal data flow.
+# The browser (data-live.js) connects to IronBeam directly and forwards data via
+# POST /ingest/ticks and POST /ingest/bars.  /connect is kept for standalone
+# backend testing only — do not call it while the frontend is running.
 @router.post("/connect")
 async def connect(body: ConnectRequest, request: Request) -> dict:
     """
     Start IronBeam WebSocket clients using the supplied credentials.
-    Called by the frontend after the user successfully logs in.
-    Safe to call multiple times — already-running clients are left untouched.
+    TEST ONLY — not used in normal operation (frontend handles the IronBeam connection).
     """
     clients = getattr(request.app.state, "ib_clients", [])
     if not clients:
@@ -167,6 +267,100 @@ async def run_gex_snapshot(request: Request) -> dict:
 
     logger.info("gex snapshot complete")
     return {"status": "ok", "output": stdout.decode(errors="replace")[-800:]}
+
+
+@router.post("/backfill/run")
+async def run_backfill(request: Request) -> dict:
+    """Detect gaps and backfill via yfinance. Returns bars written per instrument."""
+    from ..backfill.gap_detector import find_gaps
+    from ..backfill.yfinance_fill import backfill_gaps
+
+    ohlcv_store = getattr(request.app.state, "ohlcv_store", None)
+    if ohlcv_store is None:
+        raise HTTPException(status_code=503, detail="ohlcv_store not initialised")
+
+    try:
+        gaps = find_gaps(ohlcv_store)
+        logger.info("backfill/run: found %d gap blocks", len(gaps))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"gap detection failed: {exc}")
+
+    if not gaps:
+        return {"status": "ok", "gaps": 0, "bars_written": {}}
+
+    try:
+        summary = await backfill_gaps(gaps, ohlcv_store)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"backfill failed: {exc}")
+
+    return {"status": "ok", "gaps": len(gaps), "bars_written": summary}
+
+
+@router.get("/data/status")
+async def data_status(
+    request: Request,
+    ohlcv_store=Depends(get_ohlcv_store),
+) -> JSONResponse:
+    """
+    Return a compact coverage summary: bar counts per instrument per date,
+    split by source (LIVE vs BACKFILL).  Useful for checking what's in DuckDB
+    without reading logs.
+
+    Example response:
+      {
+        "ES": {
+          "total_bars": 1234,
+          "oldest": "2026-05-29T09:30:00+00:00",
+          "newest": "2026-06-05T15:59:00+00:00",
+          "by_date": [
+            {"date": "2026-06-05", "bars": 390, "live": 80, "backfill": 310}
+          ]
+        }
+      }
+    """
+    result = {}
+    for inst in INSTRUMENTS:
+        rel = ohlcv_store._conn.execute(
+            """
+            SELECT
+                CAST(timestamp AS DATE)  AS date,
+                COUNT(*)                 AS bars,
+                SUM(CASE WHEN source = 'LIVE'     THEN 1 ELSE 0 END) AS live,
+                SUM(CASE WHEN source = 'BACKFILL' THEN 1 ELSE 0 END) AS backfill
+            FROM ohlcv
+            WHERE instrument = ?
+            GROUP BY 1
+            ORDER BY 1 DESC
+            """,
+            [inst],
+        )
+        rows = rel.fetchall()
+
+        if not rows:
+            result[inst] = {"total_bars": 0, "oldest": None, "newest": None, "by_date": []}
+            continue
+
+        by_date = [
+            {"date": str(r[0]), "bars": r[1], "live": r[2], "backfill": r[3]}
+            for r in rows
+        ]
+        total = sum(r["bars"] for r in by_date)
+
+        oldest_ts = ohlcv_store._conn.execute(
+            "SELECT MIN(timestamp) FROM ohlcv WHERE instrument = ?", [inst]
+        ).fetchone()[0]
+        newest_ts = ohlcv_store._conn.execute(
+            "SELECT MAX(timestamp) FROM ohlcv WHERE instrument = ?", [inst]
+        ).fetchone()[0]
+
+        result[inst] = {
+            "total_bars": total,
+            "oldest": oldest_ts.isoformat() if oldest_ts else None,
+            "newest": newest_ts.isoformat() if newest_ts else None,
+            "by_date": by_date,
+        }
+
+    return JSONResponse(content=result)
 
 
 @router.get("/health")

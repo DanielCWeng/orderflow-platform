@@ -7,19 +7,45 @@ outputs a clean morning snapshot.
 
 import logging
 import os
+import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from config import IRONBEAM_USERNAME, IRONBEAM_API_KEY
-from data.ironbeam import fetch_nq_options
+from config import IRONBEAM_USERNAME, IRONBEAM_API_KEY, NQ_CONTRACT
+from data.barchart import fetch_nq_options as fetch_nq_options_barchart, contract_expiration_date
+from data.ironbeam import fetch_nq_options as fetch_nq_options_ironbeam
 from data.tradier import fetch_equity_options
 from data.market_context import fetch_vix_curve, fetch_cross_asset
 from data.qqq_weights import get_qqq_weights
 from data.cot import fetch_cot_nq
 from data.put_call import fetch_put_call
-from compute.gex import aggregate_gex, aggregate_vanna, aggregate_charm
+from compute.gex import aggregate_gex, aggregate_vanna, aggregate_charm, dte_status
 from levels.extract import extract_instrument_levels, extract_greek_levels, extract_confluence, detect_combos
 from output.format import print_snapshot, save_json, save_levels_json
+
+# CME quarterly roll cycle: each key maps to the next month code
+_NQ_NEXT_MONTH = {"H": "M", "M": "U", "U": "Z", "Z": "H"}
+
+
+def _next_nq_contract(contract: str) -> str | None:
+    """Return the next quarterly NQ contract symbol (e.g. NQM26 → NQU26)."""
+    m = re.match(r"^(NQ)([HMUZ])(\d{2})$", contract)
+    if not m:
+        return None
+    root, month, year = m.group(1), m.group(2), int(m.group(3))
+    next_month = _NQ_NEXT_MONTH[month]
+    next_year = year + 1 if month == "Z" else year
+    return f"{root}{next_month}{next_year:02d}"
+
+
+def _contract_dte(contract: str) -> float | None:
+    """Return calendar days until a contract's last trading day."""
+    try:
+        exp_str = contract_expiration_date(contract)
+        exp = date.fromisoformat(exp_str)
+        return (exp - date.today()).days
+    except Exception:
+        return None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,24 +65,36 @@ def run():
     total_skipped_iv = 0
 
     # -----------------------------------------------------------------------
-    # 1. Fetch NQ futures options (optional — requires IronBeam credentials)
+    # 1. Fetch NQ futures options
+    #    Primary source: Barchart (no credentials required)
+    #    Fallback: IronBeam REST API (requires credentials, currently returns
+    #              empty chains for most account tiers — kept for future use)
     # -----------------------------------------------------------------------
     nq_chain = []
-    if IRONBEAM_USERNAME and IRONBEAM_API_KEY:
-        try:
-            log.info("=== Fetching NQ futures options ===")
-            nq_chain, nq_spot = fetch_nq_options()
-            if nq_spot:
-                spots["nq"] = nq_spot
-                log.info("NQ spot: %.2f | Chain: %d contracts", nq_spot, len(nq_chain))
-            else:
-                log.warning("NQ spot price unavailable — skipping NQ GEX")
-                nq_chain = []
-        except Exception as exc:
-            log.error("NQ fetch failed: %s", exc)
+    try:
+        log.info("=== Fetching NQ futures options (Barchart) ===")
+        nq_chain, nq_spot = fetch_nq_options_barchart()
+        if nq_spot:
+            spots["nq"] = nq_spot
+            log.info("NQ spot: %.2f | Chain: %d contracts", nq_spot, len(nq_chain))
+        else:
+            log.warning("NQ spot price unavailable — skipping NQ GEX")
             nq_chain = []
-    else:
-        log.info("=== Skipping NQ (no IronBeam credentials in .env) ===")
+    except Exception as exc:
+        log.error("NQ Barchart fetch failed: %s", exc)
+        # Fallback to IronBeam if credentials are set
+        if IRONBEAM_USERNAME and IRONBEAM_API_KEY:
+            try:
+                log.info("Falling back to IronBeam for NQ options...")
+                nq_chain, nq_spot = fetch_nq_options_ironbeam()
+                if nq_spot:
+                    spots["nq"] = nq_spot
+                    log.info("NQ spot (IronBeam): %.2f | Chain: %d contracts", nq_spot, len(nq_chain))
+                else:
+                    nq_chain = []
+            except Exception as exc2:
+                log.error("NQ IronBeam fallback also failed: %s", exc2)
+                nq_chain = []
 
     # -----------------------------------------------------------------------
     # 2. Fetch QQQ options
@@ -160,6 +198,25 @@ def run():
             vanna_map, included_dtes = strike_vanna_all[name]
             vanna_levels = extract_greek_levels(vanna_map)
             vanna_levels["dtes"] = included_dtes
+
+            # Tiered DTE quality status (OK / NOTE / WARN / MISSING)
+            min_dte = min(included_dtes) if included_dtes else None
+            status, note = dte_status(min_dte)
+            vanna_levels["dte_status"] = status
+            vanna_levels["dte_note"] = note
+
+            # For NQ futures: also surface the next contract and roll timing
+            if name == "NQ":
+                next_contract = _next_nq_contract(NQ_CONTRACT)
+                if next_contract:
+                    next_dte = _contract_dte(next_contract)
+                    rolls_in = _contract_dte(NQ_CONTRACT)  # days until current expires
+                    vanna_levels["next_contract"] = {
+                        "symbol":       next_contract,
+                        "dte":          next_dte,
+                        "rolls_in_days": rolls_in,
+                    }
+
             levels["vanna"] = vanna_levels
 
         # Attach charm levels

@@ -1,5 +1,24 @@
 // ============== ChartLW — TradingView lightweight-charts ==============
 
+const safeMax = (arr, selector = x => x) => {
+  if (!arr || !arr.length) return 0;
+  let max = -Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    const v = selector(arr[i]);
+    if (v > max) max = v;
+  }
+  return max;
+};
+const safeMin = (arr, selector = x => x) => {
+  if (!arr || !arr.length) return 0;
+  let min = Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    const v = selector(arr[i]);
+    if (v < min) min = v;
+  }
+  return min;
+};
+
 const DrawIcons = {
   cursor: () => <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 2l9.5 5.5-4 1 2.5 4.5-2 1-2.5-4.5-3 3z" /></svg>,
   line:   () => <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M3 13L13 3" /><circle cx="3" cy="13" r="1.3" fill="currentColor" /><circle cx="13" cy="3" r="1.3" fill="currentColor" /></svg>,
@@ -261,7 +280,7 @@ function createFootprintSeriesView() {
       return [plotRow.low, plotRow.high];
     },
     isWhitespace(data) {
-      return !data || !data.footprint || data.footprint.length === 0;
+      return !data || data.open == null;
     },
     renderer() {
       return this._r;
@@ -291,6 +310,7 @@ function ChartLW(props) {
     showDivergence,  setShowDivergence,
     showLargePrints, setShowLargePrints,
     showGex, setShowGex,
+    instrument,
   } = props;
 
   const [overlayMenuOpen, setOverlayMenuOpen] = React.useState(false);
@@ -320,7 +340,8 @@ function ChartLW(props) {
   ];
   const anyOverlay = overlayItems.filter(Boolean).some(o => o.val);
 
-  const { candles, sessionStats, vp, dailyVP, weeklyVP } = window.OF_DATA;
+  const instrData = (window.OF_DATA_BY_SYM && window.OF_DATA_BY_SYM[instrument]) || window.OF_DATA;
+  const { candles, sessionStats, vp, dailyVP, weeklyVP } = instrData;
   const fps = window.OF_FOOTPRINT_STATS;
   const TICK = 0.25;
   const isFP = mode !== 'candle';
@@ -565,6 +586,11 @@ function ChartLW(props) {
     if (askSeriesRef.current) askSeriesRef.current.applyOptions({ visible: showVol });
   }, [showVol]);
 
+  // Reset candle count ref on instrument switch so the sync effect always calls setData
+  React.useEffect(() => {
+    prevCandleCountRef.current = -1;
+  }, [instrument]);
+
   // Track previous mode so we only reset barSpacing on candle↔FP transitions
   const prevModeRef = React.useRef(mode);
 
@@ -594,7 +620,17 @@ function ChartLW(props) {
 
   // ---- sync series data whenever candles update ----
   React.useEffect(() => {
-    if (!seriesRef.current || !candles.length) return;
+    if (!seriesRef.current) return;
+
+    // Clear all series when switching to an instrument with no data yet
+    if (!candles.length) {
+      seriesRef.current.setData([]);
+      if (volSeriesRef.current) volSeriesRef.current.setData([]);
+      if (askSeriesRef.current) askSeriesRef.current.setData([]);
+      if (fpSeriesRef.current)  fpSeriesRef.current.setData([]);
+      prevCandleCountRef.current = 0;
+      return;
+    }
 
     const prevCount = prevCandleCountRef.current;
     const newCount = candles.length;
@@ -644,7 +680,7 @@ function ChartLW(props) {
       chartRef.current.timeScale().fitContent();
       didInitialFitRef.current = true;
     }
-  }, [candles]);
+  }, [candles, instrument]);
 
   // ---- coordinate helpers ----
   const t2x = (t) => chartRef.current ? chartRef.current.timeScale().timeToCoordinate(t) : null;
@@ -794,13 +830,25 @@ function ChartLW(props) {
               if (!data?.strikes?.length || !data.spot) continue;
 
               // Scale each strike relative to the instrument spot → chart spot
-              // so the gamma shape appears at the correct proportional price on the chart
               const scale = chartSpot / data.spot;
-              const scaled = data.strikes.map(([px, gex]) => [px * scale, gex]);
-              const visible = scaled.filter(([px]) => p2y(px) != null);
+
+              // OPTIMIZATION: Get current price bounds from the chart to avoid converting thousands of strikes
+              const logicalRange = chartRef.current.timeScale().getVisibleLogicalRange();
+              if (!logicalRange) continue;
+              const pLo = y2p(H), pHi = y2p(0);
+              if (pLo == null || pHi == null) continue;
+
+              // Only process strikes that could possibly be visible
+              const visible = [];
+              for (const [px, gex] of data.strikes) {
+                const scaledPx = px * scale;
+                if (scaledPx >= pLo * 0.95 && scaledPx <= pHi * 1.05) {
+                  visible.push([scaledPx, gex]);
+                }
+              }
               if (!visible.length) continue;
 
-              const maxAbs = Math.max(...visible.map(([, g]) => Math.abs(g)));
+              const maxAbs = safeMax(visible, ([, g]) => Math.abs(g));
               if (maxAbs === 0) continue;
 
               const stripW = Math.max(50, Math.min(80, W * 0.07));
@@ -1076,7 +1124,7 @@ function ChartLW(props) {
 
           {/* ── Large Print Circles ── */}
           {showLargePrints && chartRef.current && (() => {
-            const lp = window.OF_DATA.largeTrades || [];
+            const lp = instrData.largeTrades || [];
             return lp.map((tr, i) => {
               if (!tr.barTime) return null;
               const x = t2x(tr.barTime);

@@ -8,13 +8,13 @@ INSTRUMENTS = {
         "contract": "ESM26",     # update each roll (next: ESU26 on third Friday of Jun 2026)
         "tick": 0.25,
         "yfinance": "ES=F",
-        "symbol": "XCME:ESH6",   # IronBeam format — update on roll
+        "symbol": "XCME:ES.M26",  # IronBeam format — update on roll
     },
     "NQ": {
         "contract": "NQM26",     # update each roll
         "tick": 0.25,
         "yfinance": "NQ=F",
-        "symbol": "XCME:NQH6",   # IronBeam format — update on roll
+        "symbol": "XCME:NQ.M26",  # IronBeam format — update on roll
     },
 }
 
@@ -23,7 +23,7 @@ DB_PATH = "data/orderflow.duckdb"
 PARQUET_DIR = "data/parquet"
 
 # IronBeam connection
-MOCK = True  # flip to False for live IronBeam feed
+MOCK = False  # flip to False for live IronBeam feed
 IRONBEAM_DEMO_URL = "https://demo.ironbeamapi.com"
 IRONBEAM_LIVE_URL = "https://live.ironbeamapi.com"
 MOCK_URL = "http://localhost:8001"

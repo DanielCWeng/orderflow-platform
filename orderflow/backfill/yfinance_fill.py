@@ -65,20 +65,21 @@ def fetch_1m_bars(
     ticker_symbol = _yf_symbol(instrument)
     contract = contract_from_config(instrument)
 
-    # yfinance wants naive datetimes in UTC or timestamps
-    start_str = start.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    end_str   = end.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    start_utc = start.astimezone(UTC)
+    end_utc   = end.astimezone(UTC)
+    start_str = start_utc.strftime("%Y-%m-%d %H:%M:%S")
+    end_str   = end_utc.strftime("%Y-%m-%d %H:%M:%S")
 
     # Check if within yfinance's 1m lookback window
     now_utc = datetime.datetime.now(UTC)
-    if (now_utc - start) > datetime.timedelta(days=YFINANCE_MAX_LOOKBACK_DAYS + 1):
-        logger.warning(
-            "yfinance: %s %s → %s is beyond 7-day limit for 1m data; skipping",
+    if (now_utc - start_utc) > datetime.timedelta(days=YFINANCE_MAX_LOOKBACK_DAYS + 1):
+        logger.debug(
+            "yfinance: %s %s → %s is beyond 7-day limit; skipping",
             instrument, start_str, end_str
         )
         return []
 
-    logger.info(
+    logger.debug(
         "yfinance: fetching %s (%s) from %s to %s",
         ticker_symbol, instrument, start_str, end_str
     )
@@ -86,8 +87,8 @@ def fetch_1m_bars(
     try:
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(
-            start=start_str,
-            end=end_str,
+            start=start_utc,
+            end=end_utc,
             interval="1m",
             auto_adjust=True,
             prepost=True,
@@ -141,7 +142,7 @@ def fetch_1m_bars(
             "session":    session_label,
         })
 
-    logger.info("yfinance: fetched %d bars for %s", len(rows), instrument)
+    logger.debug("yfinance: fetched %d bars for %s", len(rows), instrument)
     return rows
 
 
@@ -172,7 +173,7 @@ def fill_gap(
             )
             return 0
 
-    logger.info(
+    logger.debug(
         "backfill: %s %s %s — fetched %d, wrote %d bars",
         gap.instrument, gap.session, gap.date, len(bars), len(filtered)
     )

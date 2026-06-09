@@ -9,6 +9,10 @@ IRONBEAM_API_KEY = os.getenv("IRONBEAM_API_KEY", "")
 # --- Endpoints ---
 IRONBEAM_BASE_URL = os.getenv("IRONBEAM_BASE_URL", "https://live.ironbeamapi.com/v2")
 
+# --- NQ front-month contract (update on quarterly roll) ---
+# Match the contract in orderflow/config.py INSTRUMENTS["NQ"]["contract"]
+NQ_CONTRACT = os.getenv("NQ_CONTRACT", "NQM26")
+
 # --- Computation settings ---
 COMBO_TOLERANCE_POINTS = 50   # strike proximity window for combo detection (index points)
 RISK_FREE_RATE = 0.05         # annualised risk-free rate for BS / Black-76

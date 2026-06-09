@@ -9,6 +9,25 @@ const fmtK = (n) => {
   return String(n);
 };
 
+const safeMax = (arr, selector = x => x) => {
+  if (!arr || !arr.length) return 0;
+  let max = -Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    const v = selector(arr[i]);
+    if (v > max) max = v;
+  }
+  return max;
+};
+const safeMin = (arr, selector = x => x) => {
+  if (!arr || !arr.length) return 0;
+  let min = Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    const v = selector(arr[i]);
+    if (v < min) min = v;
+  }
+  return min;
+};
+
 // ============== Sidebar (collapsible) ==============
 const IconChevronLeft = () => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -119,7 +138,7 @@ function Sidebar({ open, onToggle, active, onSelect }) {
 // ============== DOM Ladder ==============
 function DOMLadder() {
   const { dom, domExec, domSessionDelta } = window.OF_DATA;
-  const maxSize = Math.max(1, ...dom.map((r) => Math.max(r.bid, r.ask)));
+  const maxSize = Math.max(1, safeMax(dom, (r) => Math.max(r.bid, r.ask)));
   const lastIdx = dom.findIndex(r => r.last);
   const anchorIdx = lastIdx >= 0 ? lastIdx : Math.floor(dom.length / 2);
 
@@ -216,7 +235,7 @@ function TapePanel() {
   const hotThr = stats.avgVelocity > 0 ? stats.avgVelocity * 1.4 : Infinity;
   const buyPct = stats.aggressorPct;
   const sellPct = 1 - buyPct;
-  const histMax = Math.max(...stats.histogram);
+  const histMax = safeMax(stats.histogram);
 
   // SpeedOfTapeInstant
   const sot = indData.speedOfTape || {};
@@ -346,8 +365,8 @@ function DeltaPanel() {
   if (cvdMode && cvdState.candlestick && cvdState.candlestick.length > 0) {
     const bars = cvdState.live ? [...cvdState.candlestick, cvdState.live] : cvdState.candlestick;
     const allVals = bars.flatMap(b => [b.open, b.high, b.low, b.close]);
-    const cvdMin = Math.min(...allVals);
-    const cvdMax = Math.max(...allVals);
+    const cvdMin = safeMin(allVals);
+    const cvdMax = safeMax(allVals);
     const cvdRange = Math.max(cvdMax - cvdMin, 1);
     const yScale = (v) => H - 4 - ((v - cvdMin) / cvdRange) * (H - 8);
     const xStep = bars.length > 1 ? W / (bars.length - 1) : W;
@@ -388,8 +407,8 @@ function DeltaPanel() {
 
   // ── Default: per-bar delta histogram + cumulative line ────────────
   const xStep = delta.length > 1 ? W / (delta.length - 1) : W;
-  const cumMax = Math.max(...delta.map((d) => d.cum));
-  const cumMin = Math.min(...delta.map((d) => d.cum));
+  const cumMax = safeMax(delta, (d) => d.cum);
+  const cumMin = safeMin(delta, (d) => d.cum);
   // Scale to actual data extent so line fills the chart regardless of whether
   // CVD is net positive, net negative, or crosses zero.
   const span    = Math.max(cumMax - cumMin, 1);
@@ -398,7 +417,7 @@ function DeltaPanel() {
   const LH = 60;
   const yScale  = (v) => LH - 1 - ((v - dataLo) / (dataHi - dataLo)) * (LH - 2);
   const zeroY   = Math.max(0, Math.min(LH, yScale(0)));
-  const barMax  = Math.max(...delta.map((d) => Math.abs(d.delta))) || 1;
+  const barMax  = safeMax(delta, (d) => Math.abs(d.delta)) || 1;
   const path    = delta.map((d, i) => `${i === 0 ? 'M' : 'L'}${(i * xStep).toFixed(1)},${yScale(d.cum).toFixed(1)}`).join(' ');
   const labelStyle = { position:'absolute', right:0, fontSize:'9px', lineHeight:'11px', color:'var(--fg-3)', fontFamily:"'JetBrains Mono',monospace", pointerEvents:'none' };
 

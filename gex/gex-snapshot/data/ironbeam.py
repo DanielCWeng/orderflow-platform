@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from config import IRONBEAM_BASE_URL, IRONBEAM_USERNAME, IRONBEAM_API_KEY
+from config import IRONBEAM_BASE_URL, IRONBEAM_USERNAME, IRONBEAM_API_KEY, NQ_CONTRACT
 
 log = logging.getLogger(__name__)
 
@@ -43,22 +43,45 @@ def _headers(token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _search_options(token: str, symbol: str = "NQ") -> list[str]:
-    """Return list of exchSym identifiers for NQ options."""
-    resp = requests.get(
-        f"{IRONBEAM_BASE_URL}/info/searchSymbolOptions",
-        params={"symbol": symbol},
-        headers=_headers(token),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    # data is expected to be a list of objects with an 'exchSym' field
-    if isinstance(data, list):
-        return [item["exchSym"] for item in data if "exchSym" in item]
-    # Some responses nest under a key
-    if isinstance(data, dict):
-        items = data.get("results", data.get("symbols", []))
-        return [item["exchSym"] for item in items if "exchSym" in item]
+    """Return list of option group codes for NQ options."""
+    # Prepare both formats to handle varying routing and permissions setups
+    if ":" in symbol:
+        symbols_to_try = [symbol, symbol.split(":")[-1]]
+    else:
+        symbols_to_try = [f"XCME:{symbol}", symbol]
+
+    last_error = None
+    for sym in symbols_to_try:
+        url = f"{IRONBEAM_BASE_URL}/info/symbol/search/options/{sym}"
+        log.info("Searching option groups using URL: %s", url)
+        try:
+            resp = requests.get(
+                url,
+                headers=_headers(token),
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if isinstance(data, dict):
+                # The primary target is the list of group strings
+                groups = data.get("groups", [])
+                if groups:
+                    return groups
+                
+                # Fallback to extracting group fields from optionGroups
+                opt_groups = data.get("optionGroups", [])
+                if opt_groups:
+                    return [g["group"] for g in opt_groups if "group" in g]
+            elif isinstance(data, list):
+                return data
+                
+        except Exception as exc:
+            log.warning("Option search failed for %s: %s", sym, exc)
+            last_error = exc
+
+    if last_error:
+        raise last_error
     return []
 
 
@@ -155,8 +178,8 @@ def fetch_nq_options() -> tuple[list[dict], float | None]:
     log.info("Authenticating with IronBeam...")
     token = _auth()
 
-    log.info("Searching NQ option symbols...")
-    all_syms = _search_options(token)
+    log.info("Searching NQ option symbols (contract: %s)...", NQ_CONTRACT)
+    all_syms = _search_options(token, NQ_CONTRACT)
     log.info("Found %d option symbols", len(all_syms))
 
     if not all_syms:

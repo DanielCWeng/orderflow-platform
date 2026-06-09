@@ -16,6 +16,25 @@ from config import RISK_FREE_RATE
 log = logging.getLogger(__name__)
 
 
+def dte_status(dte: float | None) -> tuple[str, str | None]:
+    """
+    Classify a DTE value into a signal quality tier.
+
+    Returns (status, message) where status is one of:
+      "OK"      — 15+ DTE, full vanna/charm character, no note needed
+      "NOTE"    — 8-14 DTE, front contract near expiry, still meaningful
+      "WARN"    — < 8 DTE, gamma dominates, vanna/charm lose precision
+      "MISSING" — no DTE data, vanna/charm unavailable
+    """
+    if dte is None:
+        return "MISSING", "No DTE data — vanna/charm unavailable"
+    if dte >= 15:
+        return "OK", None
+    if dte >= 8:
+        return "NOTE", f"Front contract at {dte:.0f} DTE — short but meaningful"
+    return "WARN", f"Front contract at {dte:.0f} DTE — gamma dominates, vanna/charm unreliable"
+
+
 def _time_to_expiry_years(contract: dict) -> float | None:
     """Compute T in years from contract expiration to now."""
     now = datetime.now(timezone.utc)
@@ -167,7 +186,8 @@ def aggregate_vanna(
 
     if not in_window:
         # fallback: expiry closest to 20 DTE
-        log.warning(
+        # (not a data quality failure — likely a front contract near expiry)
+        log.debug(
             "No expiry in 15-25 DTE window for vanna — falling back to nearest to 20 DTE"
         )
         fallback = []

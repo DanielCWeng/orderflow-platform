@@ -39,7 +39,28 @@ def _print_instrument(name: str, levels: dict, spot: float | None):
     if vanna:
         dtes = vanna.get("dtes", [])
         dte_str = f"  [{', '.join(f'{d:.0f}DTE' for d in dtes)}]" if dtes else ""
+        status = vanna.get("dte_status", "OK")
+        note = vanna.get("dte_note")
+        next_c = vanna.get("next_contract")
+
+        if status == "WARN":
+            dte_str = f"  [!] {dte_str.strip()}"
+        elif status == "MISSING":
+            dte_str = "  [!] no DTE data"
+
         print(f"  Vanna Flip:{dte_str:<20} {_fmt(vanna.get('flip'))}")
+
+        if status == "NOTE" and note:
+            note_line = f"  ({note}"
+            if next_c:
+                note_line += f" | {next_c['symbol']} rolls in ~{next_c['rolls_in_days']}d"
+            note_line += ")"
+            print(f"  {note_line}")
+        elif status == "WARN" and note:
+            print(f"  [!] {note}")
+        elif status == "MISSING":
+            print(f"  [!] {vanna.get('dte_note', 'No DTE data')}")
+
         top_v = vanna.get("top", [])
         if top_v:
             print(f"  Top Vanna:           {' / '.join(_fmt(s) for s in top_v)}")

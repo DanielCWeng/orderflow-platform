@@ -1,5 +1,28 @@
 const { useState, useEffect, useRef, useCallback } = React;
 
+function BackfillButton() {
+  const [state, setState] = React.useState('idle'); // idle | loading | ok | err
+  const run = async () => {
+    setState('loading');
+    try {
+      const r = await fetch('http://localhost:8000/backfill/run', { method: 'POST' });
+      if (r.ok) {
+        setState('ok');
+        window.OF_RELOAD_OHLCV?.();
+      } else {
+        setState('err');
+      }
+    } catch { setState('err'); }
+    setTimeout(() => setState('idle'), 3000);
+  };
+  const label = { idle: 'BF', loading: '…', ok: '✓ BF', err: '✗ BF' }[state];
+  return (
+    <button className={'ib-connect-btn gex-btn gex-' + state} onClick={run} disabled={state === 'loading'} title="Run yfinance backfill">
+      {label}
+    </button>
+  );
+}
+
 function GexButton() {
   const [state, setState] = useState('idle'); // idle | loading | ok | err
   const run = async () => {
@@ -25,6 +48,7 @@ function GexButton() {
 
 // ===== prefs persistence =====
 const PREF_DEFAULTS = {
+  active: 'ES',
   chartMode: 'bidask',
   showDelta: true, showImb: true,
   showDailyVP: true, showWeeklyVP: false, showVol: true,
@@ -65,6 +89,15 @@ function startVerticalDrag(e, onMove) {
   window.addEventListener('mouseup', up);
 }
 
+const INSTR_MAP = {
+  ES:  { ticker: 'ESM26',  name: 'E-mini S&P 500 · Jun 2026' },
+  NQ:  { ticker: 'NQM26',  name: 'E-mini Nasdaq 100 · Jun 2026' },
+  YM:  { ticker: 'YMM26',  name: 'E-mini Dow · Jun 2026' },
+  RTY: { ticker: 'RTYM26', name: 'E-mini Russell · Jun 2026' },
+  CL:  { ticker: 'CLN26',  name: 'Crude Oil · Jul 2026' },
+  NG:  { ticker: 'NGN26',  name: 'Natural Gas · Jul 2026' },
+};
+
 function App() {
   // Re-render whenever live data commits a new snapshot
   const [, setDataVersion] = useState(0);
@@ -82,9 +115,9 @@ function App() {
     return () => document.removeEventListener('of-status-update', onStatus);
   }, []);
 
-  const [active, setActive] = useState('ES');
-  const [tf, setTf] = useState('5m');
   const _p = loadPrefs();
+  const [active, setActive] = useState(_p.active || 'ES');
+  const [tf, setTf] = useState('5m');
   const [chartMode, setChartMode] = useState(_p.chartMode);
   const [showDelta, setShowDelta] = useState(_p.showDelta);
   const [showImb, setShowImb] = useState(_p.showImb);
@@ -113,13 +146,14 @@ function App() {
   // persist prefs on every change
   useEffect(() => {
     savePrefs({
+      active,
       chartMode, showDelta, showImb, showDailyVP, showWeeklyVP, showVol,
       showAbsorption, showExhaustion, showStackedImb, showUFAMarks, showUFLines,
       showWalls, showShiftCandle, showDivergence, showLargePrints,
       showGex,
       sidebarOpen, deltaH, scannerH, domH, signalsH,
     });
-  }, [chartMode, showDelta, showImb, showDailyVP, showWeeklyVP, showVol,
+  }, [active, chartMode, showDelta, showImb, showDailyVP, showWeeklyVP, showVol,
       showAbsorption, showExhaustion, showStackedImb, showUFAMarks, showUFLines,
       showWalls, showShiftCandle, showDivergence, showLargePrints,
       showGex,
@@ -187,6 +221,7 @@ function App() {
         <div className="topbar-right">
           <span className="pill"><span className="live" /> CME · LIVE</span>
           <span className="mono">{time}</span>
+          <BackfillButton />
           <GexButton />
           <button
             className="ib-connect-btn"
@@ -208,8 +243,8 @@ function App() {
       {/* SUB BAR */}
       <div className="subbar">
         <div className="symbol">
-          <span className="ticker">{active}H6</span>
-          <span className="name">E-mini S&P 500 · Mar 2026</span>
+          <span className="ticker">{INSTR_MAP[active]?.ticker ?? active}</span>
+          <span className="name">{INSTR_MAP[active]?.name ?? active}</span>
         </div>
         <span className="last mono">{last.toFixed(2)}</span>
         <span className={'chg ' + (up ? 'up' : 'dn')}>{up ? '+' : ''}{chgAbs.toFixed(2)} · {up ? '+' : ''}{chgPct.toFixed(2)}%</span>
@@ -236,13 +271,14 @@ function App() {
           open={sidebarOpen}
           onToggle={() => setSidebarOpen(!sidebarOpen)}
           active={active}
-          onSelect={setActive}
+          onSelect={(sym) => { setActive(sym); window.OF_SWITCH_INSTRUMENT?.(sym); }}
         />
 
         {/* Block A — chart / delta / scanner (all resizable) */}
         <div className="col-stack stack-mid">
           <div className="panel-slot flex">
             <ChartLW
+              instrument={active}
               mode={chartMode} setMode={setChartMode}
               showDelta={showDelta} setShowDelta={setShowDelta}
               showImb={showImb} setShowImb={setShowImb}
@@ -294,7 +330,7 @@ showShiftCandle={showShiftCandle} setShowShiftCandle={setShowShiftCandle}
           : <span>○ Waiting for connection…</span>
         }
         <span>Feed: IronBeam · CME Globex</span>
-        <span>Symbol: {active}H6</span>
+        <span>Symbol: {INSTR_MAP[active]?.ticker ?? active}</span>
         <span>TF: {tf}</span>
         <span style={{ marginLeft: 'auto' }}>Account: PAPER-04231 · Equity $50,000.00 · P&L +$1,284.50</span>
       </div>

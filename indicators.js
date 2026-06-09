@@ -510,6 +510,13 @@ class DeepWall {
   onBarClose(_bar, fp) {
     this._barCount++;
 
+    // Cleanup stale levels to prevent memory growth
+    for (const [px, lvl] of this._levels) {
+      if (this._barCount - lvl.lastVisitBar > this.staleBarCount) {
+        this._levels.delete(px);
+      }
+    }
+
     // Close any open visit at the bar boundary
     if (this._activePx !== null) {
       this._closeVisit(this._activePx);
@@ -794,6 +801,7 @@ class ImbalanceTracker {
       if (hit) {
         zone.triggeredAt = Date.now();
         this.triggeredZones.push(zone);
+        if (this.triggeredZones.length > 100) this.triggeredZones.shift();
         this._emit('ZONE_TRIGGERED', zone);
       } else {
         stillFresh.push(zone);

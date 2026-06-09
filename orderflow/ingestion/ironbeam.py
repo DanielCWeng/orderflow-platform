@@ -48,8 +48,8 @@ from ..storage.ohlcv_store import OHLCVStore
 
 logger = logging.getLogger(__name__)
 
-# Timebar subscription body (1-minute bars)
-TIMEBAR_BODY = {"resolution": "1", "type": "MINUTE"}
+# Timebar subscription body (5-minute bars — IronBeam indicator endpoint)
+TIMEBAR_BODY = {"period": 5, "barType": "MINUTE"}
 
 # Reconnect config
 RECONNECT_BASE = 1.0   # seconds
@@ -89,6 +89,7 @@ class IronBeamClient:
 
         self._token: str | None = None
         self._running = False
+        self._reconnect_count: int = 0  # suppresses log spam after first failure
         # Runtime credentials (override config values when set via /connect)
         self._username: str | None = None
         self._password: str | None = None
@@ -104,14 +105,31 @@ class IronBeamClient:
         while self._running:
             try:
                 await self._connect_and_stream()
-                backoff = RECONNECT_BASE  # reset on clean exit
+                backoff = RECONNECT_BASE
+                self._reconnect_count = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "[IB:%s] disconnected (%s). Reconnecting in %.1fs",
-                    self.instrument, exc, backoff
-                )
+                self._reconnect_count += 1
+                # Log first failure at WARNING; repeated failures at DEBUG
+                # to avoid filling the console when the account is rate-limited
+                # or the browser is already holding the stream.
+                if self._reconnect_count == 1:
+                    logger.warning(
+                        "[IB:%s] disconnected: %s. Reconnecting in %.1fs",
+                        self.instrument, exc, backoff,
+                    )
+                elif self._reconnect_count <= 3:
+                    logger.warning(
+                        "[IB:%s] still disconnected (attempt %d). Reconnecting in %.1fs — "
+                        "check that no other client is using this IronBeam account.",
+                        self.instrument, self._reconnect_count, backoff,
+                    )
+                else:
+                    logger.debug(
+                        "[IB:%s] reconnect attempt %d in %.1fs",
+                        self.instrument, self._reconnect_count, backoff,
+                    )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX)
 
@@ -134,13 +152,15 @@ class IronBeamClient:
     def _base_url(self) -> str:
         if MOCK:
             return MOCK_URL
-        return IRONBEAM_DEMO_URL  # swap to IRONBEAM_LIVE_URL for production
+        return IRONBEAM_LIVE_URL
 
-    def _ws_url(self, stream_id: str) -> str:
+    def _ws_url(self, stream_id: str, token: str = "") -> str:
         base = self._base_url()
-        # Convert http(s) to ws(s)
         ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-        return f"{ws_base}/v2/stream/{stream_id}"
+        url = f"{ws_base}/v2/stream/{stream_id}"
+        if token:
+            url += f"?token={token}"
+        return url
 
     async def _authenticate(self, session: aiohttp.ClientSession) -> str:
         """POST /auth → token string.  Skipped in MOCK mode."""
@@ -148,17 +168,21 @@ class IronBeamClient:
             logger.debug("[IB:%s] MOCK mode — skipping auth", self.instrument)
             return "mock-token"
 
-        url = f"{self._base_url()}/auth"
+        url = f"{self._base_url()}/v2/auth"
         username = self._username or IRONBEAM_USERNAME
         password = self._password or IRONBEAM_PASSWORD
         data = {"username": username, "password": password}
-        async with session.post(url, data=data) as resp:
+        async with session.post(url, json=data) as resp:
             resp.raise_for_status()
             body = await resp.json()
             token = body.get("token", "")
             if not token:
                 raise RuntimeError(f"[IB:{self.instrument}] Auth failed: {body}")
-            logger.info("[IB:%s] authenticated", self.instrument)
+            # Only log on first connect; suppress on reconnects to reduce noise
+            if self._reconnect_count == 0:
+                logger.info("[IB:%s] authenticated", self.instrument)
+            else:
+                logger.debug("[IB:%s] re-authenticated (attempt %d)", self.instrument, self._reconnect_count)
             return token
 
     async def _create_stream(
@@ -183,22 +207,41 @@ class IronBeamClient:
         headers = {} if MOCK else {"Authorization": f"Bearer {token}"}
         base = self._base_url()
 
-        subs = [
-            ("GET",  f"{base}/v2/market/quotes/subscribe/{stream_id}",
-             {"params": {"symbol": symbol}}),
-            ("GET",  f"{base}/v2/market/depths/subscribe/{stream_id}",
-             {"params": {"symbol": symbol}}),
-            ("GET",  f"{base}/v2/market/trades/subscribe/{stream_id}",
-             {"params": {"symbol": symbol}}),
-            ("POST", f"{base}/v2/indicator/subscribe/timebars/{stream_id}",
-             {"json": {**TIMEBAR_BODY, "symbol": symbol}}),
+        # Non-fatal subscriptions — IronBeam may return 400 on these but
+        # the WS stream still delivers the data.  Mirror the frontend's
+        # Promise.allSettled pattern: warn on failure, don't abort.
+        non_fatal = [
+            ("quotes", "GET",  f"{base}/v2/market/quotes/subscribe/{stream_id}",
+             {"params": {"symbols": symbol}}),
+            ("depths", "GET",  f"{base}/v2/market/depths/subscribe/{stream_id}",
+             {"params": {"symbols": symbol}}),
+            ("trades", "GET",  f"{base}/v2/market/trades/subscribe/{stream_id}",
+             {"params": {"symbols": symbol}}),
         ]
-
-        for method, url, kwargs in subs:
+        for name, method, url, kwargs in non_fatal:
             kwargs["headers"] = headers
-            async with session.request(method, url, **kwargs) as resp:
-                resp.raise_for_status()
-                logger.debug("[IB:%s] subscribed %s", self.instrument, url)
+            try:
+                async with session.request(method, url, **kwargs) as resp:
+                    if not resp.ok:
+                        body = await resp.text()
+                        logger.warning(
+                            "[IB:%s] %s subscribe returned %d: %s",
+                            self.instrument, name, resp.status, body[:200],
+                        )
+                    else:
+                        logger.debug("[IB:%s] subscribed %s", self.instrument, name)
+            except Exception as exc:
+                logger.warning("[IB:%s] %s subscribe error: %s", self.instrument, name, exc)
+
+        # Timebars is required — raise if it fails (chart will be empty without it)
+        tb_url = f"{base}/v2/indicator/{stream_id}/timeBars/subscribe"
+        async with session.post(
+            tb_url,
+            headers=headers,
+            json={**TIMEBAR_BODY, "symbol": symbol},
+        ) as resp:
+            resp.raise_for_status()
+            logger.debug("[IB:%s] subscribed timeBars", self.instrument)
 
     async def _connect_and_stream(self) -> None:
         timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=60)
@@ -207,13 +250,11 @@ class IronBeamClient:
             stream_id = await self._create_stream(http, token)
             await self._subscribe(http, token, stream_id)
 
-            ws_url = self._ws_url(stream_id)
+            ws_url = self._ws_url(stream_id, token)
             logger.info("[IB:%s] connecting WS %s", self.instrument, ws_url)
 
-            ws_headers = {} if MOCK else {"Authorization": f"Bearer {token}"}
             async with http.ws_connect(
                 ws_url,
-                headers=ws_headers,
                 heartbeat=30,
                 max_msg_size=0,
             ) as ws:
@@ -263,7 +304,8 @@ class IronBeamClient:
 
             ts = datetime.datetime.fromtimestamp(st_ms / 1000.0,
                                                  tz=datetime.timezone.utc)
-            side = "B" if td == "BUY" else ("A" if td == "SELL" else "U")
+            # IronBeam td is an integer enum: 1=buy, 2=sell, 3=cross
+            side = "B" if (td == 1 or td == "BUY") else ("A" if (td == 2 or td == "SELL") else "U")
             session_label = classify(ts)
 
             row = {
