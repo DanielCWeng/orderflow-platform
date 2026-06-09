@@ -11,6 +11,8 @@ IRONBEAM_BASE_URL = os.getenv("IRONBEAM_BASE_URL", "https://live.ironbeamapi.com
 
 # --- NQ front-month contract (update on quarterly roll) ---
 # Match the contract in orderflow/config.py INSTRUMENTS["NQ"]["contract"]
+# ROLL DUE: NQM26 → NQU26 — roll period ~Jun 11-12 2026, expiry Jun 18 2026
+# Update here + data-live.js (SYMBOL) + orderflow/config.py (INSTRUMENTS["NQ"])
 NQ_CONTRACT = os.getenv("NQ_CONTRACT", "NQM26")
 
 # --- Computation settings ---
